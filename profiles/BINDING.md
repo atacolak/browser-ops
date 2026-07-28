@@ -12,9 +12,10 @@ Cookies **are** the person. Do not share browsers across accounts.
 
 | Map | File |
 |---|---|
-| xAI email ↔ worker ↔ port | `profiles/IDENTITIES.json` (runtime; see `IDENTITIES.example.json`) |
-| API risk stage S0–S6 | `profiles/API_STAGES.json` (runtime; see example) |
-| stable name → launch + site/account | `profiles/PROFILES.json` |
+| stable name → launch + site/account | `profiles/PROFILES.json` (**tracked** named selector registry) |
+| xAI email ↔ worker ↔ port | `profiles/IDENTITIES.json` (**runtime**, gitignored; bootstrapped empty on first `identity_ops` list/ensure/…) |
+| API risk stage S0–S6 | `profiles/API_STAGES.json` (**runtime**, gitignored; bootstrapped empty on first stage-list/get/set) |
+| Cloak user-data dirs | `profiles/xai/`, `profiles/scratch/`, `profiles/vpn/` (**runtime**, gitignored) |
 | leases | `state/control/leases/` |
 | active CDP target | `state/<worker>/control/active-target.json` |
 

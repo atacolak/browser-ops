@@ -41,6 +41,49 @@ def test_bootstrap_empty_registry(iso_root: Path):
     assert reg.get("retired_identities") == []
 
 
+def test_bootstrap_empty_stages_on_load(iso_root: Path):
+    stages_path = iso_root / "profiles" / "API_STAGES.json"
+    assert not stages_path.exists()
+    doc = io._load_stages()
+    assert doc["accounts"] == {}
+    assert doc.get("version") == 1
+    assert stages_path.is_file()
+    on_disk = json.loads(stages_path.read_text())
+    assert on_disk["accounts"] == {}
+
+
+def test_stage_list_bootstraps_missing_file(iso_root: Path, capsys):
+    stages_path = iso_root / "profiles" / "API_STAGES.json"
+    assert not stages_path.exists()
+    code = io.cmd_stage_list(as_json=True)
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["accounts"] == []
+    assert stages_path.is_file()
+
+
+def test_stage_get_bootstraps_missing_file(iso_root: Path, capsys):
+    stages_path = iso_root / "profiles" / "API_STAGES.json"
+    assert not stages_path.exists()
+    code = io.cmd_stage_get("nobody@example.com", as_json=True)
+    assert code == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["api_stage"] == "S0"
+    assert row.get("inferred") is True
+    assert stages_path.is_file()
+
+
+def test_list_bootstraps_missing_identities(iso_root: Path, capsys):
+    ident_path = iso_root / "profiles" / "IDENTITIES.json"
+    assert not ident_path.exists()
+    code = io.cmd_list(as_json=True)
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["identities"] == []
+    assert out["retired_count"] == 0
+    assert ident_path.is_file()
+
+
 def test_ensure_no_start_creates_relative_paths(iso_root: Path):
     code = io.cmd_ensure("coal@example.com", as_json=True, no_start=True)
     assert code == 0

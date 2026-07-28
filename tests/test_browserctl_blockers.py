@@ -61,16 +61,68 @@ def test_resolve_viewer_cwd_fail_closed_bad_override(tmp_path: Path, monkeypatch
     )
 
 
-def test_resolve_viewer_cwd_override_ok(tmp_path: Path, monkeypatch):
-    good = tmp_path / "good"
-    (good / "src").mkdir(parents=True)
-    (good / "src" / "viewer.ts").write_text("x")
-    (good / "src" / "targetState.ts").write_text(
+def _capable_viewer(root: Path) -> Path:
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "viewer.ts").write_text("x")
+    (root / "src" / "targetState.ts").write_text(
         "observe_mirror\nHERDR_BROWSER_TARGET_STATE\nactive_target_id\n"
     )
-    (good / "src" / "browser.ts").write_text("observe_mirror\nactive_target_id\n")
+    (root / "src" / "browser.ts").write_text("observe_mirror\nactive_target_id\n")
+    return root
+
+
+def test_resolve_viewer_cwd_override_ok(tmp_path: Path, monkeypatch):
+    good = _capable_viewer(tmp_path / "good")
     monkeypatch.setenv("HERDR_BROWSER_ROOT", str(good))
     assert watch_mod.resolve_viewer_cwd() == good
+
+
+def test_resolve_viewer_cwd_browserctl_env(tmp_path: Path, monkeypatch):
+    good = _capable_viewer(tmp_path / "good")
+    monkeypatch.delenv("HERDR_BROWSER_ROOT", raising=False)
+    monkeypatch.setenv("BROWSERCTL_VIEWER_ROOT", str(good))
+    assert watch_mod.resolve_viewer_cwd() == good
+
+
+def test_resolve_viewer_cwd_viewer_root_file(tmp_path: Path, monkeypatch):
+    ops = tmp_path / "ops"
+    state = ops / "state"
+    good = _capable_viewer(tmp_path / "good")
+    cfg = state / "control" / "viewer-root"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(f"# local viewer\n{good}\n")
+    monkeypatch.delenv("HERDR_BROWSER_ROOT", raising=False)
+    monkeypatch.delenv("BROWSERCTL_VIEWER_ROOT", raising=False)
+    monkeypatch.setattr(watch_mod, "VIEWER_CANDIDATES", [])
+    assert watch_mod.resolve_viewer_cwd(root=ops, state_root=state) == good
+
+
+def test_resolve_viewer_cwd_priority_herdr_over_file(tmp_path: Path, monkeypatch):
+    ops = tmp_path / "ops"
+    state = ops / "state"
+    via_env = _capable_viewer(tmp_path / "via-env")
+    via_file = _capable_viewer(tmp_path / "via-file")
+    cfg = state / "control" / "viewer-root"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(str(via_file) + "\n")
+    monkeypatch.setenv("HERDR_BROWSER_ROOT", str(via_env))
+    monkeypatch.delenv("BROWSERCTL_VIEWER_ROOT", raising=False)
+    assert watch_mod.resolve_viewer_cwd(root=ops, state_root=state) == via_env
+
+
+def test_resolve_viewer_cwd_bad_file_fail_closed(tmp_path: Path, monkeypatch):
+    ops = tmp_path / "ops"
+    state = ops / "state"
+    bad = tmp_path / "nope"
+    bad.mkdir()
+    cfg = state / "control" / "viewer-root"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(str(bad) + "\n")
+    monkeypatch.delenv("HERDR_BROWSER_ROOT", raising=False)
+    monkeypatch.delenv("BROWSERCTL_VIEWER_ROOT", raising=False)
+    monkeypatch.setattr(watch_mod, "VIEWER_CANDIDATES", [])
+    with pytest.raises(AdapterError):
+        watch_mod.resolve_viewer_cwd(root=ops, state_root=state)
 
 
 # ── 2. xAI conflict never stops winner ───────────────────────────────────────

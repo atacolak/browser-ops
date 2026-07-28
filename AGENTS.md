@@ -17,9 +17,11 @@ Browser automation plane: CloakBrowser + CDP daemon + domain procedure memory + 
 | `daemon/` | CDP harness + active-target publish |
 | `vpn/` | geo SOCKS egress helpers |
 | `skills/domains/<site>/` | learned site procedures |
-| `profiles/PROFILES.json` | stable name → launch selector (no secrets) |
-| `profiles/IDENTITIES.json` | runtime bind map (gitignored; see example) |
-| `state/control/` | leases, locks (no secrets) |
+| `profiles/PROFILES.json` | **tracked** named selector registry (no secrets) |
+| `profiles/IDENTITIES.json` | **runtime** bind map (gitignored; bootstrapped on first use) |
+| `profiles/API_STAGES.json` | **runtime** S0–S6 ledger (gitignored; bootstrapped on first use) |
+| `profiles/<kind>/` | **runtime** Cloak profile dirs (gitignored) |
+| `state/control/` | leases, locks, optional `viewer-root` (no secrets) |
 
 Human entry: [`README.md`](./README.md) · CLI: [`docs/browserctl.md`](./docs/browserctl.md) · Binding: [`profiles/BINDING.md`](./profiles/BINDING.md)
 
@@ -83,7 +85,7 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 ## xAI / coal (browserctl → identity_ops)
 
 **One account ↔ one Cloak profile ↔ one daemon worker ↔ one CDP port.**  
-Runtime registry: `profiles/IDENTITIES.json` (bootstrapped empty; not committed).
+Runtime files: `profiles/IDENTITIES.json` and `profiles/API_STAGES.json` (bootstrapped empty on first `identity_ops` list/get/set; not committed). Profile dirs under `profiles/` are runtime only.
 
 ```bash
 ./bin/browserctl launch --kind xai --email 'USER@host' --json

@@ -20,7 +20,7 @@ Identity law:
   - ensure on a retired email requires --revive (or a clean supersession after retire)
   - retire stops daemon, drops active row, appends retired_identities, updates stage ledger
   - registry paths are repo-relative when under ROOT (no absolute host paths committed)
-  - missing IDENTITIES.json is bootstrapped empty (see profiles/IDENTITIES.example.json)
+  - missing IDENTITIES.json / API_STAGES.json are bootstrapped empty in-code on first load
 """
 
 from __future__ import annotations
@@ -67,6 +67,12 @@ EMPTY_REGISTRY: dict[str, Any] = {
         "9222": "retired/free (was default)",
         "allocation": "assign next free port per identity; never share CDP ports",
     },
+}
+
+EMPTY_STAGES: dict[str, Any] = {
+    "version": 1,
+    "canon": "skills/domains/x.ai/bot-flag-lifecycle.md",
+    "accounts": {},
 }
 
 
@@ -393,13 +399,16 @@ def _env_for(worker_id: str) -> dict[str, str]:
 
 
 def _load_stages() -> dict[str, Any]:
+    """Load API stage ledger; bootstrap empty file when absent."""
     if not API_STAGES_PATH.exists():
-        return {
-            "version": 1,
-            "canon": "skills/domains/x.ai/bot-flag-lifecycle.md",
-            "accounts": {},
-        }
-    return json.loads(API_STAGES_PATH.read_text())
+        doc = json.loads(json.dumps(EMPTY_STAGES))  # deep copy via json
+        _save_stages(doc)
+        return doc
+    doc = json.loads(API_STAGES_PATH.read_text())
+    doc.setdefault("version", 1)
+    doc.setdefault("canon", EMPTY_STAGES["canon"])
+    doc.setdefault("accounts", {})
+    return doc
 
 
 def _save_stages(doc: dict[str, Any]) -> None:

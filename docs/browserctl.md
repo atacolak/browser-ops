@@ -120,11 +120,25 @@ Missing/ambiguous endpoint → `INVALID_REQUEST`.
 
 ### Viewer root
 
+Resolve order (first capable match wins; explicit overrides fail closed if incapable):
+
+| Priority | Source |
+|---|---|
+| 1 | `HERDR_BROWSER_ROOT` env |
+| 2 | `BROWSERCTL_VIEWER_ROOT` env |
+| 3 | repo-local `state/control/viewer-root` (single-line path; gitignored under `state/`) |
+| 4 | built-in candidates (e.g. `/tmp/herdr-browser`) that pass the probe |
+
 ```bash
 export HERDR_BROWSER_ROOT=/path/to/observe_mirror-capable/herdr-browser
+# or:
+export BROWSERCTL_VIEWER_ROOT=/path/to/observe_mirror-capable/herdr-browser
+# or stable per-checkout (not committed):
+mkdir -p state/control
+echo '/path/to/observe_mirror-capable/herdr-browser' > state/control/viewer-root
 ```
 
-Pre-merge worktrees OK if capability probe passes (`observe_mirror` + target-state markers). Fail closed otherwise.
+Pre-merge worktrees OK if capability probe passes (`observe_mirror` + target-state markers). Fail closed otherwise. Do not hardcode operator home paths in-repo.
 
 ```bash
 herdr pane split <agent-pane> --direction right --ratio 0.42 …
@@ -147,8 +161,11 @@ state/<worker>/control/
   active-target.json
   .active-target.json.lock
 
-profiles/PROFILES.json          # named profile registry (repo-local)
+profiles/PROFILES.json          # tracked named selector registry
+profiles/IDENTITIES.json        # runtime bind map (bootstrapped)
+profiles/API_STAGES.json        # runtime stage ledger (bootstrapped)
 profiles/.PROFILES.json.lock    # registry RMW (runtime)
+state/control/viewer-root       # optional watch viewer path (runtime)
 ```
 
 ### active-target.json

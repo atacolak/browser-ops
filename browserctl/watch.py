@@ -6,9 +6,14 @@ Contract with herdr-browser:
   HERDR_BROWSER_TARGET_STATE=<active-target.json path>
   HERDR_BROWSER_CDP_URL=http://127.0.0.1:<port>
 
-Viewer root (prefer/require observe_mirror capability):
-  HERDR_BROWSER_ROOT override — required for non-default trees; pre-merge
-  worktrees (e.g. demiurge.mirror) are acceptable when they pass the probe.
+Viewer root (prefer/require observe_mirror capability), first match wins:
+  1. HERDR_BROWSER_ROOT env
+  2. BROWSERCTL_VIEWER_ROOT env
+  3. repo-local state/control/viewer-root text file (gitignored under state/)
+  4. VIEWER_CANDIDATES that pass the capability probe
+
+  Pre-merge worktrees are acceptable when they pass the probe.
+  Do not hardcode operator home paths in-repo.
 
 Herd session targeting (fail closed if ambiguous):
   --herdr-session / HERDR_SESSION
@@ -28,14 +33,20 @@ from pathlib import Path
 from typing import Any
 
 from browserctl.errors import AdapterError, InvalidRequest
-from browserctl.paths import active_target_path, resolve_root
+from browserctl.paths import (
+    active_target_path,
+    control_root,
+    resolve_root,
+    resolve_state_root,
+)
 
 DEFAULT_RATIO = 0.42
+VIEWER_ROOT_FILENAME = "viewer-root"
 
 # Preferred viewer roots — only used when they pass observe_mirror capability probe.
-# HERDR_BROWSER_ROOT override always wins when set.
+# Env / viewer-root file overrides always win when set (see resolve_viewer_cwd).
 VIEWER_CANDIDATES = [
-    # additional roots via HERDR_BROWSER_ROOT only (no hardcoded host paths)
+    # additional roots via env or state/control/viewer-root (no hardcoded host paths)
     Path("/tmp/herdr-browser"),
 ]
 
@@ -262,24 +273,83 @@ def probe_observe_mirror(root: Path) -> dict[str, Any]:
     }
 
 
-def resolve_viewer_cwd(*, require_capable: bool = True) -> Path:
+def viewer_root_config_path(
+    *,
+    state_root: Path | str | None = None,
+    root: Path | str | None = None,
+) -> Path:
+    """Repo-local gitignored path for a stable viewer root override."""
+    return control_root(resolve_state_root(state_root, root=root)) / VIEWER_ROOT_FILENAME
+
+
+def _read_viewer_root_file(
+    *,
+    state_root: Path | str | None = None,
+    root: Path | str | None = None,
+) -> str | None:
+    path = viewer_root_config_path(state_root=state_root, root=root)
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        return line
+    return None
+
+
+def _viewer_root_candidates(
+    *,
+    state_root: Path | str | None = None,
+    root: Path | str | None = None,
+) -> list[tuple[str, str]]:
+    """Ordered (source, path) overrides before VIEWER_CANDIDATES."""
+    out: list[tuple[str, str]] = []
+    herdr = os.environ.get("HERDR_BROWSER_ROOT", "").strip()
+    if herdr:
+        out.append(("HERDR_BROWSER_ROOT", herdr))
+    browserctl = os.environ.get("BROWSERCTL_VIEWER_ROOT", "").strip()
+    if browserctl:
+        out.append(("BROWSERCTL_VIEWER_ROOT", browserctl))
+    file_root = _read_viewer_root_file(state_root=state_root, root=root)
+    if file_root:
+        out.append((f"file:{viewer_root_config_path(state_root=state_root, root=root)}", file_root))
+    return out
+
+
+def resolve_viewer_cwd(
+    *,
+    require_capable: bool = True,
+    state_root: Path | str | None = None,
+    root: Path | str | None = None,
+) -> Path:
     """
     Resolve herdr-browser root that supports observe_mirror.
 
-    Prefer HERDR_BROWSER_ROOT (override; required for non-default / pre-merge
-    worktrees in production docs). Fall back to known candidates that pass
-    the capability probe. Fail closed if none capable.
+    Priority:
+      1. HERDR_BROWSER_ROOT
+      2. BROWSERCTL_VIEWER_ROOT
+      3. state/control/viewer-root (repo-local, gitignored)
+      4. VIEWER_CANDIDATES that pass the capability probe
+
+    Fail closed if none capable. Explicit overrides that fail the probe error
+    immediately (do not silently fall through).
     """
     tried: list[dict[str, Any]] = []
-    env = os.environ.get("HERDR_BROWSER_ROOT", "").strip()
-    if env:
-        probe = probe_observe_mirror(Path(env))
+    for source, raw in _viewer_root_candidates(state_root=state_root, root=root):
+        path = Path(raw).expanduser()
+        probe = probe_observe_mirror(path)
+        probe = {**probe, "source": source}
         tried.append(probe)
         if probe["ok"]:
-            return Path(env)
+            return path
         if require_capable:
             raise AdapterError(
-                "HERDR_BROWSER_ROOT is set but is not observe_mirror-capable "
+                f"{source} is set but is not observe_mirror-capable "
                 "(fail closed). Point it at a tree with observe_mirror support "
                 "(pre-merge worktree is OK if capable).",
                 probe=probe,
@@ -287,14 +357,16 @@ def resolve_viewer_cwd(*, require_capable: bool = True) -> Path:
 
     for cand in VIEWER_CANDIDATES:
         probe = probe_observe_mirror(cand)
+        probe = {**probe, "source": "candidate"}
         tried.append(probe)
         if probe["ok"]:
             return cand
 
     raise AdapterError(
         "no observe_mirror-capable herdr-browser root found; set "
-        "HERDR_BROWSER_ROOT to a capable tree (pre-merge worktrees acceptable "
-        "when they pass the capability probe)",
+        "HERDR_BROWSER_ROOT, BROWSERCTL_VIEWER_ROOT, or write a path to "
+        f"{viewer_root_config_path(state_root=state_root, root=root)} "
+        "(pre-merge worktrees acceptable when they pass the capability probe)",
         tried=tried,
     )
 

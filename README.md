@@ -39,9 +39,11 @@ Spawn navigator **with returned `env`**. It must not allocate ports/profiles.
 | `daemon/` | CDP harness + active-target publish |
 | `vpn/` | gluetun compose + VPN browser spawn |
 | `skills/domains/` | curated site procedures (xAI, fines, …) |
-| `profiles/PROFILES.json` | name → launch selector + site/account |
-| `profiles/IDENTITIES.example.json` | schema for runtime bind map |
-| `state/control/` | leases, locks (runtime, gitignored) |
+| `profiles/PROFILES.json` | **tracked** named selector registry (no secrets) |
+| `profiles/IDENTITIES.json` | **runtime** bind map (gitignored; bootstrapped on first use) |
+| `profiles/API_STAGES.json` | **runtime** S0–S6 ledger (gitignored; bootstrapped on first use) |
+| `profiles/xai/`, `scratch/`, … | **runtime** Cloak profile dirs (gitignored) |
+| `state/control/` | leases, locks, optional `viewer-root` (runtime, gitignored) |
 
 ---
 
@@ -54,9 +56,24 @@ python3 identity_ops.py retire --email 'USER@host' --reason …
 python3 identity_ops.py stage-get --email 'USER@host' --json
 ```
 
-- Runtime registry: `profiles/IDENTITIES.json` (gitignored; bootstrapped empty on first use).
+- `profiles/IDENTITIES.json` and `profiles/API_STAGES.json` are gitignored runtime files; `identity_ops` bootstraps each empty on first list/get/set.
+- Profile dirs under `profiles/` are runtime only — never commit live data.
 - **active ∩ retired = ∅**. `ensure` on a retired email needs `--revive`.
 - Admin credentials: **`CPA_ADMIN_KEY` env only** — commands/skills fail closed if absent where needed.
+
+### Watch viewer root
+
+`browserctl watch` resolves an observe_mirror-capable herdr-browser tree (fail closed):
+
+1. `HERDR_BROWSER_ROOT`
+2. `BROWSERCTL_VIEWER_ROOT`
+3. repo-local `state/control/viewer-root` (single-line path; gitignored under `state/`)
+
+```bash
+# one-time per checkout (path is local; not committed)
+mkdir -p state/control
+echo '/path/to/observe_mirror-capable/herdr-browser' > state/control/viewer-root
+```
 
 ---
 

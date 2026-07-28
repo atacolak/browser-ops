@@ -12,23 +12,22 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Cloak / Chromium user-data (never commit cookies/caches)
-# Keep only schema/docs at profiles/ root.
+# Cloak / Chromium user-data (never commit cookies/caches).
+# Tracked under profiles/: PROFILES.json + docs only.
+# Runtime (gitignored): IDENTITIES.json, API_STAGES.json, profile dirs.
 profiles/**
 !profiles/BINDING.md
-!profiles/IDENTITIES.example.json
-!profiles/API_STAGES.example.json
 !profiles/PROFILES.json
 !profiles/README.md
 
-# runtime identity + stage ledgers (bootstrapped locally)
+# runtime identity + stage ledgers (bootstrapped locally by identity_ops)
 profiles/IDENTITIES.json
 profiles/API_STAGES.json
 profiles/.PROFILES.json.lock
 profiles/.IDENTITIES.json.lock
 profiles/.API_STAGES.json.lock
 
-# daemon sockets, events, provenance, leases
+# daemon sockets, events, provenance, leases, optional viewer-root
 state/**
 
 # one-off scratch / capture dumps
