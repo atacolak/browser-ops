@@ -1,0 +1,43 @@
+# Standalone geo-located SOCKS5 egress for browser-ops.
+#
+# Wraps a single WireGuard tunnel (Mullvad by default) in a gluetun
+# container and exposes a local SOCKS5 port. Browser-ops CloakBrowser
+# instances point --proxy-url at it; only that browser's traffic
+# egresses via VPN. Host routing is untouched.
+#
+# Region is parameterized via env. Reuse is per-call: spin up for the
+# task, stop when done. No persistent worker topology, no auth dirs,
+# no provider state. Pure browser egress capability.
+#
+# Usage:
+#   COUNTRY=germany CITY=frankfurt SOCKS_PORT=10801 \
+#     docker compose -f docker-compose.vpn.yml up -d
+#   docker compose -f docker-compose.vpn.yml down
+
+services:
+  vpn:
+    image: qmcgaw/gluetun:latest
+    container_name: browser-ops-vpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "127.0.0.1:${SOCKS_PORT:-10801}:1080"
+    environment:
+      VPN_SERVICE_PROVIDER: mullvad
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES}
+      SERVER_COUNTRIES: ${COUNTRY:-germany}
+      SERVER_CITIES: ${CITY:-frankfurt}
+      SOCKS5_ENABLED: "on"
+      SOCKS5_LISTENING_ADDRESS: ":1080"
+      LOG_LEVEL: info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s

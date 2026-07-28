@@ -1,0 +1,54 @@
+# xAI Account — Health Check
+# Check the status of all xAI accounts on the CPA proxy.
+# Returns account state, error counts, and model availability.
+name: xai-health
+description: Check health status of all xAI accounts on the CPA proxy
+domain: cpa-manager
+
+steps:
+  # Fetch all auth files from management API
+  - action: evaluate
+    expression: |
+      (async () => {
+        const r = await fetch("/v0/management/auth-files", {
+          headers: { "Authorization": "Bearer ${CPA_ADMIN_KEY}" }  # CPA_ADMIN_KEY required
+        });
+        const data = await r.json();
+        const files = data.files || [];
+        const xai = files.filter(f => f.provider === "xai");
+        return JSON.stringify(xai.map(f => ({
+          email: f.email,
+          status: f.status,
+          failed: f.failed,
+          disabled: f.disabled,
+          models: (f.models || []).length,
+          success: f.success
+        })));
+      })()
+    store_as: accounts
+
+  # Verify we got data
+  - action: verify
+    assert: "accounts != None"
+    message: "Should receive account list from management API"
+
+  # Check if any accounts are in error state
+  - action: evaluate
+    expression: |
+      (() => {
+        const accts = JSON.parse(JSON.stringify(accounts_json));
+        const errored = accts.filter(a => a.status === "error" || a.failed > 0);
+        return errored.length === 0 ? "all-healthy" : JSON.stringify(errored.map(a => a.email));
+      })()
+    store_as: health_summary
+
+  # Report
+  - action: evaluate
+    expression: |
+      (() => {
+        const accts = JSON.parse(JSON.stringify(accounts_json));
+        const ok = accts.filter(a => a.status === "active" && a.failed === 0);
+        const bad = accts.filter(a => a.status === "error" || a.failed > 0);
+        return `xAI Accounts: ${accts.length} total, ${ok.length} healthy, ${bad.length} errored`;
+      })()
+    store_as: report

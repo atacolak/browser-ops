@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Blessed ad-hoc daemon entrypoint. Sets the env contract and execs -m daemon.main.
+# Coal / production identities should still use: identity_ops.py ensure --email …
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export BROWSER_ALLOW_EVALUATE="${BROWSER_ALLOW_EVALUATE:-1}"
+export BROWSER_OPS_ROOT="${BROWSER_OPS_ROOT:-$ROOT}"
+
+# Default worker if caller passes nothing (still overrideable via args).
+if [[ $# -eq 0 ]]; then
+  set -- --worker default --launch --headless --cdp-port 9333
+fi
+
+cd "$ROOT"
+exec python3 -m daemon.main "$@"

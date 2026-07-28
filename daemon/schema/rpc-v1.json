@@ -1,0 +1,258 @@
+{
+  "version": "1",
+  "description": "Browser Harness Daemon RPC schema — versioned contract for Python and TypeScript clients.",
+  "transport": "ND-JSON over Unix socket (one command line → one response line)",
+  "error_envelope": {
+    "code": "string (error code)",
+    "message": "string (human-readable detail)",
+    "retryable": "boolean",
+    "screenshot": "string | null (path to screenshot on error)",
+    "page": {"url": "string", "title": "string"}
+  },
+  "methods": {
+    "ping": {
+      "description": "Health check — verify the daemon is alive.",
+      "params": {},
+      "result": {"ok": true, "worker": "string"},
+      "errors": []
+    },
+    "page_info": {
+      "description": "Get current page metadata (URL, title, viewport, scroll position, content dimensions). Returns dialog info if a JS dialog is active.",
+      "params": {},
+      "result": {
+        "url": "string",
+        "title": "string",
+        "w": "number",
+        "h": "number",
+        "sx": "number",
+        "sy": "number",
+        "pw": "number",
+        "ph": "number"
+      },
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "navigate": {
+      "description": "Navigate the current page to a URL.",
+      "params": {"url": "string"},
+      "result": {"result": {"loaderId": "string", "frameId": "string"}},
+      "errors": ["NAV_TIMEOUT", "CDP_DISCONNECTED"]
+    },
+    "screenshot": {
+      "description": "Capture a screenshot. If 'path' is provided, the PNG is written to disk and the path returned. Base64 data is never inlined in responses.",
+      "params": {"path": "string | null"},
+      "result": {"path": "string | null"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "screenshot_base64": {
+      "description": "Capture a screenshot and return the base64-encoded PNG data.",
+      "params": {},
+      "result": {"base64": "string"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "click": {
+      "description": "Click at pixel coordinates (x, y) with optional button and click count.",
+      "params": {
+        "x": "number",
+        "y": "number",
+        "button": "string (left | right | middle, default: left)",
+        "clicks": "number (default: 1)"
+      },
+      "result": {"clicked": true, "x": "number", "y": "number"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "type": {
+      "description": "Insert text at the focused element via Input.insertText.",
+      "params": {"text": "string"},
+      "result": {"typed": true, "length": "number"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "press": {
+      "description": "Press a single key (e.g. Enter, Tab, Backspace, Escape, Arrow keys).",
+      "params": {"key": "string"},
+      "result": {"pressed": true},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "scroll": {
+      "description": "Scroll the page by dy pixels at (x, y) via a mouse wheel event.",
+      "params": {
+        "x": "number (default: 500)",
+        "y": "number (default: 500)",
+        "dy": "number (default: -300)"
+      },
+      "result": {"scrolled": true},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "evaluate": {
+      "description": "Evaluate JavaScript in the page context with returnByValue and awaitPromise.",
+      "params": {"expression": "string"},
+      "result": {"value": "any (JSON-serializable)", "type": "string"},
+      "errors": ["CDP_DISCONNECTED", "JS_EVALUATION_ERROR"]
+    },
+    "extract": {
+      "description": "Extract text content or an attribute from the first element matching a CSS selector.",
+      "params": {
+        "selector": "string",
+        "attribute": "string | null"
+      },
+      "result": {"value": "string | null"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "fill_input": {
+      "description": "Fill an input field: focus, select all, clear, type character-by-character, then dispatch input + change events for framework compatibility.",
+      "params": {
+        "selector": "string",
+        "text": "string"
+      },
+      "result": {"filled": true, "selector": "string"},
+      "errors": ["CDP_DISCONNECTED", "ELEMENT_NOT_FOUND"]
+    },
+    "tabs": {
+      "description": "List all open page tabs. Alias for list_tabs.",
+      "params": {},
+      "result": {"tabs": [{"targetId": "string", "url": "string", "title": "string", "type": "page"}]},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "list_tabs": {
+      "description": "List all open page tabs.",
+      "params": {},
+      "result": {"tabs": "array"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "new_tab": {
+      "description": "Create a new tab, attach to it, and optionally navigate to a URL.",
+      "params": {"url": "string (default: about:blank)"},
+      "result": {"target_id": "string", "session_id": "string"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "switch_tab": {
+      "description": "Activate an existing tab and attach a session to it. Enables CDP domains on the new session.",
+      "params": {"target_id": "string"},
+      "result": {"target_id": "string", "session_id": "string"},
+      "errors": ["CDP_DISCONNECTED", "TAB_NOT_FOUND"]
+    },
+    "close_tab": {
+      "description": "Close a tab. If no target_id is provided, closes the current tab.",
+      "params": {"target_id": "string | null"},
+      "result": {"closed": "string"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "dialog": {
+      "description": "Return current JavaScript dialog state (alert/confirm/prompt).",
+      "params": {},
+      "result": {"dialog": "object|null (fields: type, message, defaultPrompt)"},
+      "errors": []
+    },
+    "dialog_dismiss": {
+      "description": "Accept or dismiss a JavaScript dialog.",
+      "params": {
+        "accept": "boolean (default: true)",
+        "prompt_text": "string (default: '')"
+      },
+      "result": {"dismissed": true},
+      "errors": ["CDP_DISCONNECTED", "NO_DIALOG"]
+    },
+    "wait_for_load": {
+      "description": "Poll document.readyState until 'complete' or timeout.",
+      "params": {"timeout": "number (default: 15.0)"},
+      "result": {"ready": "boolean", "timeout": "boolean"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "wait_for_element": {
+      "description": "Poll for a CSS selector in the DOM until found or timeout.",
+      "params": {
+        "selector": "string",
+        "timeout": "number (default: 10.0)"
+      },
+      "result": {"found": "boolean", "timeout": "boolean", "selector": "string"},
+      "errors": ["CDP_DISCONNECTED"]
+    },
+    "http_get": {
+      "description": "Perform an HTTP GET request outside the browser (via urllib). Useful for fetching raw data without navigation.",
+      "params": {
+        "url": "string",
+        "headers": "object | null"
+      },
+      "result": {"body": "string", "status": "number"},
+      "errors": ["HTTP_ERROR"]
+    },
+    "upload_file": {
+      "description": "Upload a file via a file input element using CDP.",
+      "params": {
+        "selector": "string",
+        "file_path": "string"
+      },
+      "result": {"uploaded": true, "selector": "string", "file": "string"},
+      "errors": ["ELEMENT_NOT_FOUND", "UPLOAD_FAILED"]
+    },
+    "drain_events": {
+      "description": "Drain buffered CDP events (dialog openings, network events, etc.) and return them.",
+      "params": {},
+      "result": {"events": [{"method": "string", "params": "object"}]},
+      "errors": []
+    },
+    "run_procedure": {
+      "description": "Execute a deterministic step list. Interpolates {{variable}} placeholders from the optional params dict, runs each action sequentially, captures store_as values, and evaluates verify assertions with configurable failure policy.",
+      "params": {
+        "steps": "array — list of step dicts, each with 'action' and action-specific fields",
+        "params": "object | null — optional {{variable}} interpolation values"
+      },
+      "result": {
+        "procedure": true,
+        "steps_executed": "number",
+        "steps_total": "number",
+        "passed": [{"step": "number", "action": "string"}],
+        "failed": [{"step": "number", "action": "string", "error": "string"}],
+        "skipped": [{"step": "number", "action": "string", "reason": "string"}],
+        "variables": {"var_name": "any"},
+        "on_failure_policy": "string",
+        "stopped_early": "boolean"
+      },
+      "errors": ["INVALID_STEPS", "CDP_DISCONNECTED"]
+    },
+    "report_outcome": {
+      "description": "Report a skill execution outcome to the worker's skill-health JSONL log.",
+      "params": {
+        "skill_id": "string — the skill identifier (e.g. 'github-search-v1')",
+        "success": "boolean — whether the skill execution succeeded",
+        "error": "string | null — optional error message on failure",
+        "details": "object | null — optional structured details"
+      },
+      "result": {
+        "reported": true,
+        "skill_id": "string",
+        "success": "boolean"
+      },
+      "errors": []
+    },
+    "health": {
+      "description": "Return overall health and capability info for the backend.",
+      "params": {},
+      "result": {
+        "connected": "boolean",
+        "worker": "string",
+        "target_id": "string | null",
+        "dialog_active": "boolean",
+        "events_buffered": "number",
+        "capabilities": ["string"]
+      },
+      "errors": []
+    }
+  },
+  "error_codes": {
+    "UNKNOWN_ACTION": {"message": "The requested action is not recognized", "retryable": false},
+    "CDP_DISCONNECTED": {"message": "CDP WebSocket connection is lost or not established", "retryable": true},
+    "NAV_TIMEOUT": {"message": "Navigation did not complete within the timeout", "retryable": true},
+    "ELEMENT_NOT_FOUND": {"message": "A required DOM element was not found", "retryable": true},
+    "MISSING_PARAM": {"message": "A required parameter was not provided", "retryable": false},
+    "INVALID_JSON": {"message": "The command line is not valid JSON", "retryable": false},
+    "NOT_IMPLEMENTED": {"message": "The backend does not implement this method", "retryable": false},
+    "INTERNAL_ERROR": {"message": "An unexpected internal error occurred", "retryable": true},
+    "JS_EVALUATION_ERROR": {"message": "JavaScript evaluation threw an exception", "retryable": true},
+    "HTTP_ERROR": {"message": "HTTP request failed", "retryable": true},
+    "NO_DIALOG": {"message": "No JavaScript dialog is currently open", "retryable": false},
+    "TAB_NOT_FOUND": {"message": "The requested tab target was not found", "retryable": false},
+    "UPLOAD_FAILED": {"message": "File upload via CDP failed", "retryable": true},
+    "INVALID_STEPS": {"message": "Procedure steps must be a list", "retryable": false},
+    "TIMEOUT": {"message": "Read timeout on the IPC socket", "retryable": true}
+  }
+}

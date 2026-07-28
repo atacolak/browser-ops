@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# browserctl — browser session lease manager CLI
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export BROWSER_OPS_ROOT="${BROWSER_OPS_ROOT:-$ROOT}"
+exec python3 -m browserctl.cli "$@"

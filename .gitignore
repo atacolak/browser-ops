@@ -1,0 +1,51 @@
+# runtime / agent state
+.pi/
+.beads/
+.bv/
+.checkpoints/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Cloak / Chromium user-data (never commit cookies/caches)
+# Keep only schema/docs at profiles/ root.
+profiles/**
+!profiles/BINDING.md
+!profiles/IDENTITIES.example.json
+!profiles/API_STAGES.example.json
+!profiles/PROFILES.json
+!profiles/README.md
+
+# runtime identity + stage ledgers (bootstrapped locally)
+profiles/IDENTITIES.json
+profiles/API_STAGES.json
+profiles/.PROFILES.json.lock
+profiles/.IDENTITIES.json.lock
+profiles/.API_STAGES.json.lock
+
+# daemon sockets, events, provenance, leases
+state/**
+
+# one-off scratch / capture dumps
+page_source.html
+paste_and_submit*.js
+fill_and_submit.js
+*.png
+/tmp/
+
+# local secrets
+secrets/
+findings/
+.env
+.env.*
+
+# VPN creds (account-scoped, not for git)
+vpn/.wireguard.env
+state/vpn_runtime.json
+profiles/vpn/
+state/vpn_browser_logs/

@@ -1,0 +1,86 @@
+# xAI Account — Reauthenticate
+# Delete old auth file, then re-add via device code flow.
+# Combines xai-remove + xai-add into one operation.
+name: xai-reauth
+description: Reauthenticate an xAI account — remove old auth, re-add via OAuth
+domain: cpa-manager
+params:
+  email:
+    description: xAI account email
+  password:
+    description: xAI account password
+
+steps:
+  # Step 1: Delete old auth file from the CPA proxy container
+  - action: evaluate
+    expression: |
+      (async () => {
+        const filename = "xai-" + "{{email}}".replace(/[^a-zA-Z0-9@._-]/g, "") + ".json";
+        // The daemon can't do docker exec, so we use the CPA management API delete
+        // But that's broken (404/400). Instead we report the filename for manual removal.
+        window.__xai_filename = filename;
+        return filename;
+      })()
+    store_as: auth_filename
+
+  # Step 2: Remove via container filesystem (requires docker access from host)
+  # This step must be run from a context that has docker access.
+  - action: evaluate
+    expression: |
+      (async () => {
+        // Try the management API first
+        const r = await fetch("/v0/management/auth-files", {
+          headers: { "Authorization": "Bearer ${CPA_ADMIN_KEY}" }  # CPA_ADMIN_KEY required
+        });
+        const data = await r.json();
+        const files = data.files || [];
+        const target = files.find(f => f.email === "{{email}}" && f.provider === "xai");
+        if (!target) return "no-existing-auth";
+        
+        // Query-param name (path-style /auth-files/<id> 404s on current CPA)
+        const del = await fetch("/v0/management/auth-files?name=" + encodeURIComponent(target.name), {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer ${CPA_ADMIN_KEY}" }  # CPA_ADMIN_KEY required
+        });
+        return "delete-attempted:" + del.status;
+      })()
+    store_as: delete_result
+
+  # Step 3: Initiate device code flow
+  - action: evaluate
+    expression: |
+      (async () => {
+        const r = await fetch("/v0/management/xai-auth-url", {
+          headers: { "Authorization": "Bearer ${CPA_ADMIN_KEY}" }  # CPA_ADMIN_KEY required
+        });
+        const d = await r.json();
+        window.__xai_device = d;
+        return JSON.stringify({ flow: d.flow, user_code: d.user_code });
+      })()
+    store_as: device_info
+  - action: verify
+    assert: "device_info != None"
+
+  # Step 4: Navigate to device URL and confirm
+  - action: evaluate
+    expression: "window.__xai_device.url"
+    store_as: device_url
+  - action: navigate
+    url: "{{device_url}}"
+  - action: wait_for_load
+    timeout: 15
+
+  # Step 5: Confirm authorization
+  - action: evaluate
+    expression: "document.querySelector('button')?.click()"
+  - action: wait_for_load
+    timeout: 10
+
+  # Step 6: Verify
+  - action: evaluate
+    expression: "document.body?.innerText?.toLowerCase().includes('success') || document.body?.innerText?.toLowerCase().includes('connected')"
+    store_as: confirmed
+  - action: verify
+    assert: "confirmed"
+    message: "Device authorization should be confirmed"
+    on_failure: continue

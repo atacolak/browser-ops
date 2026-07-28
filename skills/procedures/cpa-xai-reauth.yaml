@@ -1,0 +1,43 @@
+# CPA xAI Account Reauthentication
+# Procedure: Login → OAuth → Start xAI Login → Consent → Code → Submit
+# Domain: 127.0.0.1:8316 (CPA Manager Plus), accounts.x.ai (xAI)
+# Params: {{admin_key}}, {{email}}, {{password}}
+
+name: cpa-xai-reauth
+description: Reauthenticate an xAI account through CPA Dashboard OAuth flow
+domain: cpa-manager
+params:
+  admin_key:
+    description: CPA admin key from CPA_ADMIN_KEY env
+    required: true
+    from_env: CPA_ADMIN_KEY
+  email:
+    description: xAI account email
+  password:
+    description: xAI account password
+
+steps:
+  # ── Step 1: CPA Login ──
+  - action: navigate
+    url: "http://127.0.0.1:8316/management.html#/oauth"
+  - action: wait_for_load
+    timeout: 10
+  # Fill admin key field (focused by default or click to focus)
+  - action: click
+    x: 500
+    y: 280
+    description: "Click admin key input to focus"
+  - action: type
+    text: "{{admin_key}}"
+  # Tab to checkbox, Space to toggle, Tab to Login, Enter
+  - action: press
+    key: "Tab"
+  - action: press
+    key: " "
+    description: "Toggle Remember credential checkbox"
+  - action: press
+    key: "Tab"
+  - action: press
+    key: "Enter"
+  - action: wait_for_load
+    timeout: 5

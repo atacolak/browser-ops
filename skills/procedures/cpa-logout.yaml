@@ -1,0 +1,22 @@
+# CPA Manager Plus — Logout
+# Learned from: navigator session, 2026-07-12
+# Selector: button.btn-ghost[4] (SVG logout icon in header)
+
+name: cpa-logout
+description: Log out of CPA Manager Plus
+domain: cpa-manager
+
+steps:
+  # Click the logout icon (5th ghost button in header, SVG door+arrow icon)
+  - action: evaluate
+    expression: 'document.querySelectorAll("button.btn-ghost")[4].click()'
+  # Wait for redirect to login
+  - action: wait_for_load
+    timeout: 10
+  # Verify we're back at login
+  - action: evaluate
+    expression: 'document.querySelector("input[placeholder*=\"admin key\"]") !== null'
+    store_as: login_visible
+  - action: verify
+    assert: "login_visible"
+    message: "Should see admin key input on login page"

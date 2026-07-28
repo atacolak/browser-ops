@@ -1,0 +1,97 @@
+# xAI Account — Add (OAuth Device Code Flow)
+# Depends on: cpa-login (must be on CPA dashboard first)
+# The new CPA proxy uses device code flow — one URL, one confirmation.
+name: xai-add
+description: Add a new xAI account via OAuth device code flow
+domain: cpa-manager
+params:
+  email:
+    description: xAI account email
+  password:
+    description: xAI account password
+
+steps:
+  # Step 1: Initiate device code flow via CPA management API
+  # We use bash/curl to call the management API since the daemon doesn't do HTTP
+  - action: evaluate
+    expression: |
+      (async () => {
+        const r = await fetch("/v0/management/xai-auth-url", {
+          headers: { "Authorization": "Bearer ${CPA_ADMIN_KEY}" }  # CPA_ADMIN_KEY required
+        });
+        const d = await r.json();
+        window.__xai_device = d;
+        return JSON.stringify({ flow: d.flow, user_code: d.user_code });
+      })()
+    store_as: device_info
+    description: "Request device code from CPA management API"
+
+  # Step 2: Verify we got a device flow response
+  - action: verify
+    assert: "device_info != None"
+    message: "CPA management API should return device code"
+
+  # Step 3: Navigate to the device authorization URL
+  - action: evaluate
+    expression: "window.__xai_device.url"
+    store_as: device_url
+  - action: navigate
+    url: "{{device_url}}"
+  - action: wait_for_load
+    timeout: 15
+
+  # Step 4: Verify device auth page loaded
+  - action: evaluate
+    expression: "document.querySelector('button') !== null"
+    store_as: has_button
+  - action: verify
+    assert: "has_button"
+    message: "Device authorization page should have a confirmation button"
+
+  # Step 5: Sign in if needed (the device page may redirect to sign-in)
+  - action: evaluate
+    expression: "window.location.href.includes('sign-in') || window.location.href.includes('login')"
+    store_as: needs_signin
+  - action: verify
+    assert: "needs_signin == 'false'"
+    message: "Should not need sign-in if session cookies exist"
+    on_failure: continue
+
+  # Step 5a: Sign in with email/password (only if needed)
+  - action: evaluate
+    expression: |
+      (() => {
+        // Click "Login with email" if present
+        const emailBtn = [...document.querySelectorAll("button")].find(b => b.textContent.includes("email"));
+        if (emailBtn) emailBtn.click();
+        return emailBtn ? "clicked email btn" : "no email btn";
+      })()
+  - action: fill
+    selector: 'input[type="email"]'
+    text: "{{email}}"
+  - action: evaluate
+    expression: '[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Next")?.click()'
+  - action: wait_for_load
+    timeout: 5
+  - action: fill
+    selector: 'input[type="password"]'
+    text: "{{password}}"
+  - action: evaluate
+    expression: '[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Login")?.click()'
+  - action: wait_for_load
+    timeout: 10
+
+  # Step 6: Confirm device authorization
+  - action: evaluate
+    expression: "document.querySelector('button')?.click() || [...document.querySelectorAll('button')].find(b => b.textContent.includes('Continue') || b.textContent.includes('Confirm') || b.textContent.includes('Allow'))?.click()"
+  - action: wait_for_load
+    timeout: 10
+
+  # Step 7: Verify success (page should show confirmation)
+  - action: evaluate
+    expression: "document.body?.innerText?.includes('success') || document.body?.innerText?.includes('connected') || document.body?.innerText?.includes('approved') || window.location.href.includes('device') === false"
+    store_as: confirmed
+  - action: verify
+    assert: "confirmed"
+    message: "Device authorization should be confirmed"
+    on_failure: continue
