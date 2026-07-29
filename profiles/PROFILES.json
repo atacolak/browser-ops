@@ -1,4 +1,32 @@
 {
-  "version": 1,
-  "profiles": {}
+  "profiles": {
+    "scratch-general-1": {
+      "associations": [],
+      "created_at": "2026-07-29T14:34:11Z",
+      "launch": {
+        "kind": "scratch",
+        "label": "scratch-general-1"
+      },
+      "updated_at": "2026-07-29T14:34:11Z"
+    },
+    "scratch-general-2": {
+      "associations": [],
+      "created_at": "2026-07-29T14:34:11Z",
+      "launch": {
+        "kind": "scratch",
+        "label": "scratch-general-2"
+      },
+      "updated_at": "2026-07-29T14:34:11Z"
+    },
+    "scratch-general-3": {
+      "associations": [],
+      "created_at": "2026-07-29T14:34:11Z",
+      "launch": {
+        "kind": "scratch",
+        "label": "scratch-general-3"
+      },
+      "updated_at": "2026-07-29T14:34:11Z"
+    }
+  },
+  "version": 1
 }
