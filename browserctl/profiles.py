@@ -206,6 +206,7 @@ def validate_launch(launch: dict[str, Any]) -> dict[str, Any]:
             raise InvalidRequest("xai launch requires email", kind=kind)
         out["email"] = email
         _opt_str("worker")
+        _opt_bool("no_start")  # identity_ops ensure supports bind-only
     elif kind in ("scratch", "adhoc"):
         _opt_str("label")
         _opt_str("worker")

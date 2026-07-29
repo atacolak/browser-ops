@@ -35,6 +35,24 @@ from browserctl import watch as watch_mod
 DEFAULT_TTL = 3600.0  # 1h
 DEFAULT_ONE_SHOT_TTL = 900.0  # 15m
 
+# Exclusive with profile_name (headless included so API cannot override headed).
+_SELECTOR_KEYS = frozenset(
+    "kind adapter email worker worker_id label cdp_port country city "
+    "headed headless no_start attach_only".split()
+)
+
+
+def _apply_headed_headless(req: dict[str, Any]) -> None:
+    """Derive headless from headed; reject contradictions on every path."""
+    if req.get("headed") is None:
+        return
+    headed = bool(req["headed"])
+    if req.get("headless") is not None and bool(req["headless"]) != (not headed):
+        raise InvalidRequest(
+            "headed/headless contradict", headed=headed, headless=bool(req["headless"])
+        )
+    req["headless"] = not headed
+
 
 def _public_lease(lease: dict[str, Any]) -> dict[str, Any]:
     """Return lease dict safe for agents (no secrets by construction)."""
@@ -57,6 +75,9 @@ def _navigator_env(lease: dict[str, Any], *, state_root: Path) -> dict[str, str]
     env.setdefault("BROWSER_HARNESS_WORKER", str(worker_id))
     env.setdefault("BROWSER_TARGET_STATE", tsp)
     env.setdefault("BROWSERCTL_LEASE_ID", lease["lease_id"])
+    profile_name = lease.get("profile_name")
+    if profile_name:
+        env["BROWSERCTL_PROFILE_NAME"] = str(profile_name)
     if resources.get("cdp_url"):
         env.setdefault("BROWSER_CDP_URL", str(resources["cdp_url"]))
     return env
@@ -160,32 +181,61 @@ class Manager:
     # ── acquire / release ────────────────────────────────────────────────
 
     def acquire(self, request: dict[str, Any]) -> dict[str, Any]:
-        kind = (request.get("kind") or request.get("adapter") or "").strip().lower()
+        req = dict(request)
+        raw_profile = req.pop("profile_name", None) or req.pop("profile", None)
+        profile_name = (
+            str(raw_profile).strip() or None if raw_profile is not None else None
+        )
+
+        if profile_name:
+            from browserctl.profiles import ProfileRegistry, validate_launch
+
+            present = sorted(
+                k for k in _SELECTOR_KEYS if k in req and req.get(k) is not None
+            )
+            if present:
+                raise InvalidRequest(
+                    "profile excludes launch selector fields "
+                    f"({', '.join(present)})",
+                    profile=profile_name,
+                    fields=present,
+                )
+            for k in _SELECTOR_KEYS:
+                req.pop(k, None)
+            profile = ProfileRegistry(root=self.root).show(profile_name)
+            profile_name = profile["name"]
+            launch = validate_launch(dict(profile.get("launch") or {}))
+            req.update(launch)
+            if "worker" in launch:
+                req["worker_id"] = launch["worker"]
+
+        _apply_headed_headless(req)
+
+        kind = (req.get("kind") or req.get("adapter") or "").strip().lower()
         if not kind:
             raise InvalidRequest(
-                "acquire requires --kind (xai|scratch|vpn)",
+                "acquire requires --kind or --profile (xai|scratch|vpn)",
             )
         if kind in ("default",):
             raise InvalidRequest("refusing managed default kind")
 
-        owner = (request.get("owner") or "operator").strip()
-        mode = (request.get("mode") or "persistent").strip()
+        owner = (req.get("owner") or "operator").strip()
+        mode = (req.get("mode") or "persistent").strip()
         if mode not in ("persistent", "one_shot"):
             raise InvalidRequest("mode must be persistent|one_shot")
 
-        ttl = request.get("ttl")
+        ttl = req.get("ttl")
         if ttl is None:
             ttl = DEFAULT_ONE_SHOT_TTL if mode == "one_shot" else DEFAULT_TTL
         ttl = float(ttl)
 
         adapter = get_adapter(kind)
-        req = dict(request)
         req["root"] = str(self.root)
         req["state_root"] = str(self.state_root)
 
         # Fast path: if caller already knows worker_id, serialize under that
         # mutex and refuse before starting anything new.
-        known_worker = (request.get("worker_id") or request.get("worker") or "").strip()
+        known_worker = (req.get("worker_id") or req.get("worker") or "").strip()
         if known_worker and known_worker != "default":
             with worker_mutex(self.state_root, known_worker):
                 existing = find_active_lease_for_worker(self.state_root, known_worker)
@@ -245,6 +295,8 @@ class Manager:
                 env=dict(acquired.get("env") or {}),
                 meta=meta,
             )
+            if profile_name:
+                lease["profile_name"] = profile_name
             Path(resources["target_state_path"]).parent.mkdir(
                 parents=True, exist_ok=True
             )

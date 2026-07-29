@@ -33,6 +33,7 @@ Always safe for agents: add `--json`.
 | `reap` / `reap --lease ID` | TTL / force cleanup |
 | `mark-exit --lease ID` | navigator exited without release → expiring |
 | `launch` / `spawn` | acquire (+ optional `--watch`) → navigator env JSON |
+| `launch\|acquire --profile NAME` | exact named-profile lookup → launch selector (+ lease stamp) |
 | `profiles list` | named profiles in `profiles/PROFILES.json` |
 | `profiles show <name>` | one profile (launch + associations) |
 | `profiles register <name> --kind …` | map name → launch selector |
@@ -90,6 +91,23 @@ Resolve is **exact** (never fuzzy):
 
 `register --replace` overwrites launch and keeps associations.
 
+#### Launch / acquire by name (`--profile`)
+
+Exact name lookup (`profiles show`); no site/account guessing on launch:
+
+```bash
+./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
+./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json
+out=$(./bin/browserctl launch --profile coal-demo --owner orch --json)
+# lease.profile_name + env.BROWSERCTL_PROFILE_NAME
+./bin/browserctl release --lease "$(jq -r .lease.lease_id <<<"$out")" --json
+```
+
+`--profile` **or** `--kind` required. `--profile` is exclusive with selector flags
+(`--kind/--email/--worker/--label/--cdp-port/--country/--city/--headed/--no-start/--attach-only`);
+runtime flags (`--owner/--mode/--ttl/--watch`) stay allowed. Manager enforces the same
+exclusion and derives `headless` from profile `headed`.
+
 ---
 
 ## Rules
@@ -103,6 +121,7 @@ Resolve is **exact** (never fuzzy):
 7. **Scratch CDP ports** under global `ports.lock` with retry.
 8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed).
 9. **Profile resolve** is deterministic; refuse ambiguity; emit-only (no acquire).
+10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `profile_name` + `BROWSERCTL_PROFILE_NAME`.
 
 ---
 

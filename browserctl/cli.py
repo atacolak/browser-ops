@@ -85,25 +85,50 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_acquire(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    req = {
-        "kind": args.kind,
+_SELECTOR_DESTS = (
+    "kind", "email", "worker", "label", "cdp_port",
+    "country", "city", "headed", "no_start", "attach_only",
+)
+
+
+def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = False) -> dict[str, Any]:
+    """Build acquire/launch request (unset selector flags use argparse.SUPPRESS)."""
+    req: dict[str, Any] = {
         "owner": args.owner,
         "mode": args.mode,
         "ttl": args.ttl,
-        "email": args.email,
-        "worker_id": args.worker,
-        "worker": args.worker,
-        "label": args.label,
-        "cdp_port": args.cdp_port,
-        "country": args.country,
-        "city": args.city,
-        "headless": not args.headed,
-        "no_start": args.no_start,
-        "attach_only": args.attach_only,
-        "force": args.force if hasattr(args, "force") else False,
     }
+    if getattr(args, "profile", None):
+        req["profile_name"] = args.profile
+    else:
+        for dest in _SELECTOR_DESTS:
+            if getattr(args, dest, None) is None:
+                continue
+            val = getattr(args, dest)
+            req[dest] = val
+            if dest == "worker":
+                req["worker_id"] = val
+        # Legacy default when --headed omitted: headless browser.
+        if "headed" in req:
+            req["headed"] = bool(req["headed"])
+        else:
+            req["headless"] = True
+        for flag in ("no_start", "attach_only"):
+            if flag in req:
+                req[flag] = bool(req[flag])
+
+    if for_launch:
+        req["watch"] = bool(getattr(args, "watch", False))
+        req["agent_pane"] = getattr(args, "agent_pane", None)
+        req["ratio"] = getattr(args, "ratio", None)
+        req["herdr_session"] = getattr(args, "herdr_session", None)
+        req["herdr_socket"] = getattr(args, "herdr_socket", None)
+    return req
+
+
+def cmd_acquire(args: argparse.Namespace) -> int:
+    m = _mgr(args)
+    req = _request_from_launch_args(args, for_launch=False)
     out = m.acquire(req)
     if args.json:
         print(json.dumps(out, indent=2, sort_keys=True, default=str))
@@ -174,27 +199,7 @@ def cmd_mark_exit(args: argparse.Namespace) -> int:
 
 def cmd_launch(args: argparse.Namespace) -> int:
     m = _mgr(args)
-    req = {
-        "kind": args.kind,
-        "owner": args.owner,
-        "mode": args.mode,
-        "ttl": args.ttl,
-        "email": args.email,
-        "worker_id": args.worker,
-        "worker": args.worker,
-        "label": args.label,
-        "cdp_port": args.cdp_port,
-        "country": args.country,
-        "city": args.city,
-        "headless": not args.headed,
-        "no_start": args.no_start,
-        "attach_only": args.attach_only,
-        "watch": args.watch,
-        "agent_pane": args.agent_pane,
-        "ratio": args.ratio,
-        "herdr_session": getattr(args, "herdr_session", None),
-        "herdr_socket": getattr(args, "herdr_socket", None),
-    }
+    req = _request_from_launch_args(args, for_launch=True)
     out = m.launch(req)
     # launch always prefers JSON-shaped env for orchestrators when --json
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
@@ -281,26 +286,42 @@ def cmd_profiles_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_launch_selector_flags(p: argparse.ArgumentParser, *, kind_required: bool = True) -> None:
-    """Persistent launch selector flags for profile register (not lease runtime)."""
+def _add_launch_selector_flags(
+    p: argparse.ArgumentParser,
+    *,
+    kind_required: bool = True,
+    suppress_defaults: bool = False,
+) -> None:
+    """Selector flags. suppress_defaults → argparse.SUPPRESS (acquire/launch)."""
+    d: dict[str, Any] = {"default": argparse.SUPPRESS} if suppress_defaults else {}
+    kind_kw: dict[str, Any] = {
+        "choices": ["xai", "scratch", "adhoc", "vpn"],
+        "help": "lifecycle adapter / launch kind",
+        **d,
+    }
+    if kind_required:
+        kind_kw["required"] = True
+        kind_kw.pop("default", None)
+    p.add_argument("--kind", **kind_kw)
+    p.add_argument("--email", help="xai identity email", **d)
+    p.add_argument("--worker", help="worker id (vpn/scratch optional)", **d)
+    p.add_argument("--label", help="scratch label", **d)
+    p.add_argument("--cdp-port", type=int, **({} if suppress_defaults else {"default": None}), **d)
+    p.add_argument("--country", help="vpn country", **d)
+    p.add_argument("--city", help="vpn city", **d)
+    p.add_argument("--headed", action="store_true", help="scratch: headed browser", **d)
+    p.add_argument("--no-start", action="store_true", help="bind only; do not launch", **d)
     p.add_argument(
-        "--kind",
-        required=kind_required,
-        choices=["xai", "scratch", "adhoc", "vpn"],
-        help="lifecycle adapter / launch kind",
+        "--attach-only", action="store_true", help="vpn: only attach existing runtime", **d
     )
-    p.add_argument("--email", help="xai identity email")
-    p.add_argument("--worker", help="worker id (vpn/scratch optional)")
-    p.add_argument("--label", help="scratch label")
-    p.add_argument("--cdp-port", type=int, default=None)
-    p.add_argument("--country", help="vpn country")
-    p.add_argument("--city", help="vpn city")
-    p.add_argument("--headed", action="store_true", help="scratch: headed browser")
-    p.add_argument("--no-start", action="store_true", help="bind only; do not launch")
+
+
+def _add_profile_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
-        "--attach-only",
-        action="store_true",
-        help="vpn: only attach existing runtime",
+        "--profile",
+        default=None,
+        metavar="NAME",
+        help="named profile (profiles show); exclusive with selector flags",
     )
 
 
@@ -325,12 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
     ac = sub.add_parser(
         "acquire", help="acquire a mutation lease + start adapter", parents=[shared]
     )
-    ac.add_argument(
-        "--kind",
-        required=True,
-        choices=["xai", "scratch", "adhoc", "vpn"],
-        help="lifecycle adapter",
-    )
+    _add_profile_flag(ac)
+    _add_launch_selector_flags(ac, kind_required=False, suppress_defaults=True)
     ac.add_argument("--owner", default="operator")
     ac.add_argument(
         "--mode",
@@ -339,19 +356,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="persistent: orchestrator releases; one_shot: shorter TTL",
     )
     ac.add_argument("--ttl", type=float, default=None)
-    ac.add_argument("--email", help="xai identity email")
-    ac.add_argument("--worker", help="worker id (vpn/scratch optional)")
-    ac.add_argument("--label", help="scratch label")
-    ac.add_argument("--cdp-port", type=int, default=None)
-    ac.add_argument("--country", help="vpn country")
-    ac.add_argument("--city", help="vpn city")
-    ac.add_argument("--headed", action="store_true", help="scratch: headed browser")
-    ac.add_argument("--no-start", action="store_true", help="bind only; do not launch")
-    ac.add_argument(
-        "--attach-only",
-        action="store_true",
-        help="vpn: only attach existing runtime",
-    )
     ac.set_defaults(func=cmd_acquire)
 
     rel = sub.add_parser(
@@ -428,11 +432,8 @@ def build_parser() -> argparse.ArgumentParser:
             help="acquire (+ optional --watch) and print navigator env JSON",
             parents=[shared],
         )
-        lp.add_argument(
-            "--kind",
-            required=True,
-            choices=["xai", "scratch", "adhoc", "vpn"],
-        )
+        _add_profile_flag(lp)
+        _add_launch_selector_flags(lp, kind_required=False, suppress_defaults=True)
         lp.add_argument("--owner", default="operator")
         lp.add_argument(
             "--mode",
@@ -440,15 +441,6 @@ def build_parser() -> argparse.ArgumentParser:
             choices=["persistent", "one_shot"],
         )
         lp.add_argument("--ttl", type=float, default=None)
-        lp.add_argument("--email")
-        lp.add_argument("--worker")
-        lp.add_argument("--label")
-        lp.add_argument("--cdp-port", type=int, default=None)
-        lp.add_argument("--country")
-        lp.add_argument("--city")
-        lp.add_argument("--headed", action="store_true")
-        lp.add_argument("--no-start", action="store_true")
-        lp.add_argument("--attach-only", action="store_true")
         lp.add_argument(
             "--watch",
             action="store_true",
@@ -563,6 +555,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(_normalize_argv(raw))
+    if getattr(args, "func", None) in (cmd_acquire, cmd_launch):
+        has_profile = bool(getattr(args, "profile", None))
+        has_kind = getattr(args, "kind", None) is not None
+        if not has_profile and not has_kind:
+            parser.error("acquire/launch require --kind or --profile NAME")
+        if has_profile:
+            used = [
+                d
+                for d in _SELECTOR_DESTS
+                if getattr(args, d, None) is not None
+            ]
+            if used:
+                flags = ", ".join(
+                    "--" + d.replace("_", "-") for d in used
+                )
+                parser.error(
+                    f"--profile excludes launch selector flags ({flags})"
+                )
     try:
         return int(args.func(args) or 0)
     except BrowserctlError as e:
