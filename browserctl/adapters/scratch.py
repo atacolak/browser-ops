@@ -1,9 +1,15 @@
-"""Ad-hoc / scratch profile adapter — unique worker, profile dir, CDP port."""
+"""Ad-hoc / scratch profile adapter — unique or stable worker, profile dir, CDP port.
+
+Wipe is opt-in via resources.ephemeral_wipe_v1, set only when acquire mints a
+unique token worker (no explicit worker/profile_dir). Legacy leases that only
+have ephemeral_profile=true are never wiped. Named/explicit scratches are stable.
+"""
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -277,19 +283,109 @@ def _wait_cdp(port: int, *, timeout: float = 20.0) -> bool:
     return False
 
 
+def _strict_child(path: Path, parent: Path) -> bool:
+    try:
+        r, pr = path.resolve(), parent.resolve()
+        if r == pr:
+            return False
+        r.relative_to(pr)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _control_blocked(path: Path, control_state_root: Path | str | None) -> bool:
+    if not control_state_root:
+        return False
+    try:
+        r = path.resolve()
+        sr = Path(control_state_root).resolve()
+        ctl = sr / "control"
+        if ctl.exists():
+            ctl = ctl.resolve()
+    except OSError:
+        return True
+    if r in (sr, ctl):
+        return True
+    try:
+        ctl.relative_to(r)
+        return True
+    except ValueError:
+        pass
+    try:
+        r.relative_to(ctl)
+        return True
+    except ValueError:
+        return False
+
+
+def _wipe_dir(
+    path: str | Path | None,
+    *,
+    allowed_root: Path,
+    label: str,
+    control_state_root: Path | str | None = None,
+) -> dict[str, Any]:
+    if not path:
+        return {"path": None, "wiped": False, "skipped": True, "reason": f"no_{label}"}
+    p = Path(path)
+    try:
+        resolved = p.resolve()
+    except OSError as e:
+        return {"path": str(path), "wiped": False, "error": str(e)}
+    if _control_blocked(resolved, control_state_root):
+        return {
+            "path": str(resolved),
+            "wiped": False,
+            "reason": "control_plane",
+            "error": f"refuse wipe {label} overlapping control plane",
+        }
+    if not _strict_child(resolved, allowed_root):
+        return {
+            "path": str(resolved),
+            "wiped": False,
+            "error": f"refuse wipe {label} outside {allowed_root}",
+        }
+    if not p.exists() and not resolved.exists():
+        return {"path": str(resolved), "wiped": True, "missing": True}
+    try:
+        shutil.rmtree(resolved)
+        return {"path": str(resolved), "wiped": True}
+    except OSError as e:
+        return {"path": str(resolved), "wiped": False, "error": str(e)}
+
+
+def _wipe_ok(result: dict[str, Any] | None) -> bool:
+    if not result:
+        return False
+    if result.get("wiped"):
+        return True
+    return bool(result.get("skipped") and str(result.get("reason") or "").startswith("no_"))
+
+
 def acquire(request: dict[str, Any]) -> dict[str, Any]:
     root = resolve_root(request.get("root"))
     state_root = resolve_state_root(request.get("state_root"), root=root)
     label = (request.get("label") or request.get("name") or "").strip()
+    explicit_worker = bool(
+        (request.get("worker_id") or request.get("worker") or "").strip()
+    )
+    explicit_profile_dir = bool(request.get("profile_dir"))
     token = uuid.uuid4().hex[:8]
-    if label:
-        slug = _slugify(label)
-        worker_id = request.get("worker_id") or f"scratch-{slug}-{token}"
+    if explicit_worker:
+        worker_id = (request.get("worker_id") or request.get("worker") or "").strip()
+    elif label:
+        worker_id = f"scratch-{_slugify(label)}-{token}"
     else:
-        worker_id = request.get("worker_id") or f"scratch-{token}"
+        worker_id = f"scratch-{token}"
 
     if worker_id in RETIRED or worker_id == "default":
         raise InvalidRequest("refusing managed default worker for scratch")
+
+    # Wipe marker only for newly minted token workers. Never accept request-side
+    # ephemeral_profile / ephemeral_wipe_v1 as an enablement switch (legacy safe).
+    ephemeral_wipe_v1 = not explicit_worker and not explicit_profile_dir
+    ephemeral_profile = ephemeral_wipe_v1  # informational; wipe gates on wipe_v1
 
     preferred = request.get("cdp_port")
     if preferred is not None:
@@ -404,12 +500,16 @@ def acquire(request: dict[str, Any]) -> dict[str, Any]:
         "cdp_url": f"http://127.0.0.1:{port}",
         "profile_dir": str(profile_dir),
         "state_dir": str(state_dir),
+        "ops_root": str(root),
         "control_state_root": str(state_root),
         "target_state_path": str(target_state),
         "socket": str(state_dir / "daemon.sock"),
         "daemon": daemon,
         "headless": headless,
-        "ephemeral_profile": True,
+        # legacy informational flag (also true only for wipe_v1 token workers)
+        "ephemeral_profile": ephemeral_profile,
+        # sole wipe enablement marker — never present on pre-upgrade leases
+        "ephemeral_wipe_v1": ephemeral_wipe_v1,
     }
     return {
         "worker_id": worker_id,
@@ -417,7 +517,11 @@ def acquire(request: dict[str, Any]) -> dict[str, Any]:
         "adapter": "scratch",
         "resources": resources,
         "env": env,
-        "meta": {"label": label or None},
+        "meta": {
+            "label": label or None,
+            "ephemeral_wipe_v1": ephemeral_wipe_v1,
+            "stable": not ephemeral_wipe_v1,
+        },
     }
 
 
@@ -425,10 +529,24 @@ def release(lease: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     resources = lease.get("resources") or {}
     worker_id = lease.get("worker_id") or resources.get("worker_id")
     profile_dir = resources.get("profile_dir")
+    state_dir = resources.get("state_dir")
     port = int(resources.get("cdp_port") or 0)
-    # Drop port reservation under the control state root used at acquire.
+    # ONLY the v1 marker enables wipe. legacy ephemeral_profile alone never wipes.
+    wipe_enabled = bool(resources.get("ephemeral_wipe_v1"))
+    if resources.get("ops_root"):
+        root = Path(str(resources["ops_root"]))
+    else:
+        root = resolve_root(None)
+        if profile_dir:
+            try:
+                pd = Path(str(profile_dir)).resolve()
+                if pd.parent.name == "scratch" and pd.parent.parent.name == "profiles":
+                    root = pd.parent.parent.parent
+            except OSError:
+                pass
+
     try:
-        sr = resources.get("control_state_root") or str(ROOT / "state")
+        sr = resources.get("control_state_root") or str(root / "state")
         with port_alloc_mutex(sr, timeout=5.0):
             _release_reserved_port(sr, port)
     except Exception:
@@ -439,16 +557,16 @@ def release(lease: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     _kill_pids(daemon_pids + chrome_pids)
 
     if worker_id:
-        sock = ROOT / "state" / worker_id / "daemon.sock"
-        if resources.get("socket"):
-            sock = Path(resources["socket"])
+        sock = Path(resources["socket"]) if resources.get("socket") else (
+            root / "state" / worker_id / "daemon.sock"
+        )
         try:
             if sock.exists():
                 sock.unlink()
         except OSError:
             pass
 
-    if profile_dir:
+    if profile_dir and not wipe_enabled:
         for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             p = Path(profile_dir) / name
             try:
@@ -457,13 +575,70 @@ def release(lease: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
             except OSError:
                 pass
 
+    daemon_left = _daemon_pids(worker_id) if worker_id else []
+    chrome_left = _chrome_pids(profile_dir) if profile_dir else []
     still_cdp = bool(port and _cdp_alive(port))
+    cleared = not daemon_left and not chrome_left and not still_cdp
+    wipe_profile: dict[str, Any] | None = None
+    wipe_state: dict[str, Any] | None = None
+    control_sr = resources.get("control_state_root")
+
+    if wipe_enabled and cleared:
+        wipe_profile = _wipe_dir(
+            profile_dir,
+            allowed_root=scratch_profiles_root(root),
+            label="profile_dir",
+            control_state_root=control_sr,
+        )
+        wipe_state = _wipe_dir(
+            state_dir,
+            allowed_root=root / "state",
+            label="state_dir",
+            control_state_root=control_sr,
+        )
+    elif wipe_enabled and not cleared:
+        wipe_profile = {
+            "wiped": False,
+            "skipped": True,
+            "reason": "processes_or_cdp_alive",
+            "daemon_pids_left": daemon_left,
+            "chrome_pids_left": chrome_left,
+            "cdp_alive": still_cdp,
+        }
+        wipe_state = dict(wipe_profile)
+
+    cleanup_incomplete = False
+    cleanup_error: str | None = None
+    if wipe_enabled:
+        if not cleared:
+            cleanup_incomplete = True
+            cleanup_error = "processes_or_cdp_alive"
+        elif not (_wipe_ok(wipe_profile) and _wipe_ok(wipe_state)):
+            cleanup_incomplete = True
+            parts = []
+            for w, fallback in (
+                (wipe_profile, "profile_wipe_failed"),
+                (wipe_state, "state_wipe_failed"),
+            ):
+                if not _wipe_ok(w):
+                    parts.append((w or {}).get("error") or (w or {}).get("reason") or fallback)
+            cleanup_error = "; ".join(parts)
+
+    status = "partial" if (still_cdp or cleanup_incomplete) else "stopped"
     return {
-        "status": "partial" if still_cdp else "stopped",
+        "status": status,
         "daemon_pids": daemon_pids,
         "chrome_pids": chrome_pids,
         "cdp_alive": still_cdp,
         "force": force,
+        "ephemeral_wipe_v1": wipe_enabled,
+        "ephemeral_profile": bool(resources.get("ephemeral_profile")),
+        "cleanup_incomplete": cleanup_incomplete,
+        "cleanup_error": cleanup_error,
+        "profile_wiped": bool((wipe_profile or {}).get("wiped")),
+        "state_wiped": bool((wipe_state or {}).get("wiped")),
+        "wipe_profile": wipe_profile,
+        "wipe_state": wipe_state,
     }
 
 

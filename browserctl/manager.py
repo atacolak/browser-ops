@@ -208,6 +208,12 @@ class Manager:
             req.update(launch)
             if "worker" in launch:
                 req["worker_id"] = launch["worker"]
+            # Named scratch/adhoc: finite stable pool — derive worker when unset
+            # so re-launch reuses dirs (never mint unique tokens → no wipe_v1).
+            kind_from_profile = str(launch.get("kind") or "").strip().lower()
+            if kind_from_profile in ("scratch", "adhoc"):
+                if not (req.get("worker_id") or req.get("worker")):
+                    req["worker_id"] = f"scratch-profile-{profile_name}"
 
         _apply_headed_headless(req)
 
@@ -363,19 +369,38 @@ class Manager:
                     raise
                 release_result = {"status": "error", "error": str(e), "force": True}
 
+            # Incomplete wipe/process cleanup stays retryable (non-terminal).
+            release_status = str((release_result or {}).get("status") or "")
+            incomplete = bool((release_result or {}).get("cleanup_incomplete")) or (
+                release_status in ("partial", "error")
+            )
+
             lease = touch_lease(lease)
-            lease["status"] = "released"
-            lease["released_at"] = lease["updated_at"]
             lease["release_result"] = release_result
             if watch_result is not None:
                 lease["last_watch_stop"] = watch_result
+            if incomplete:
+                lease["status"] = "expiring"
+                meta = dict(lease.get("meta") or {})
+                meta["release_incomplete"] = True
+                if (release_result or {}).get("cleanup_error"):
+                    meta["release_cleanup_error"] = release_result["cleanup_error"]
+                lease["meta"] = meta
+            else:
+                lease["status"] = "released"
+                lease["released_at"] = lease["updated_at"]
+                meta = dict(lease.get("meta") or {})
+                meta.pop("release_incomplete", None)
+                meta.pop("release_cleanup_error", None)
+                lease["meta"] = meta
             save_lease(self.state_root, lease)
 
         return {
-            "ok": True,
+            "ok": not incomplete,
             "lease": _public_lease(lease),
             "release": release_result,
             "watch_stop": watch_result,
+            "retryable": incomplete,
         }
 
     # ── watch ────────────────────────────────────────────────────────────
@@ -553,17 +578,35 @@ class Manager:
                     lease_id=lease["lease_id"],
                     force=True,
                 )
-                # mark reaped rather than merely released when via reap
                 lid = lease["lease_id"]
+                # Only terminal-reap when release completed cleanup. Incomplete
+                # ephemeral wipes stay expiring/retryable for a later pass.
+                if result.get("retryable") or not result.get("ok", True):
+                    skipped.append(
+                        {
+                            "lease_id": lid,
+                            "reason": "release_incomplete",
+                            "release": result.get("release"),
+                        }
+                    )
+                    continue
                 with worker_mutex(self.state_root, lease["worker_id"]):
                     cur = load_lease(self.state_root, lid)
-                    if cur:
+                    if cur and cur.get("status") == "released":
                         cur["status"] = "reaped"
                         cur["reaped_at"] = time.strftime(
                             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)
                         )
                         save_lease(self.state_root, cur)
                         reaped.append(_public_lease(cur))
+                    elif cur:
+                        skipped.append(
+                            {
+                                "lease_id": lid,
+                                "reason": "not_released",
+                                "status": cur.get("status"),
+                            }
+                        )
                     else:
                         reaped.append(result.get("lease") or {"lease_id": lid})
             except Exception as e:

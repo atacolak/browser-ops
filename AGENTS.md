@@ -63,7 +63,7 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 | Kind | Adapter | Notes |
 |---|---|---|
 | `xai` | `identity_ops ensure/stop` | one email ↔ worker ↔ port; **not** `default` |
-| `scratch` / `adhoc` | unique worker + profile + CDP | demos; **explicit** fallback — never auto-created by resolve |
+| `scratch` / `adhoc` | unique token worker when ad-hoc; **stable** when `--worker` or `--profile` (named → `scratch-profile-<name>` unless launch.worker set) | demos / finite named pool; wipe only if `ephemeral_wipe_v1` (never legacy `ephemeral_profile` alone) |
 | `vpn` | `vpn/spawn_vpn_browser` | attach existing or start region worker |
 
 ### Named profile registry

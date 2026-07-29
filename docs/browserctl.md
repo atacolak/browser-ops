@@ -49,6 +49,20 @@ Always safe for agents: add `--json`.
 ./bin/browserctl release --lease "$LEASE" --json
 ```
 
+#### Ephemeral vs stable scratch
+
+| Launch shape | Worker | `ephemeral_wipe_v1` | On successful `release` / `reap` |
+|---|---|---|---|
+| `--kind scratch` (optional `--label`) | unique token worker | `true` | wipe profile + state after processes dead + path containment |
+| `--kind scratch --worker W` / explicit `profile_dir` | stable | absent/`false` | keep dirs |
+| `--profile NAME` (`scratch`/`adhoc`) | `launch.worker` or `scratch-profile-<name>` | absent/`false` | keep (finite named pool) |
+
+**Wipe requires `resources.ephemeral_wipe_v1=true`.** Legacy leases with only `ephemeral_profile=true` (main always stamped that, including explicit `--worker`) are **never** wiped. Request-side `ephemeral_profile` / `ephemeral_wipe_v1` cannot enable wiping. Additional gates: processes/CDP dead; `profile_dir` strict child of `profiles/scratch`; `state_dir` strict child of `<root>/state`; never control plane (`control_state_root` / `control/`).
+
+Incomplete wipe → adapter `status=partial` + `cleanup_incomplete`; manager keeps lease `expiring` / `retryable` (not terminal) until cleanup succeeds.
+
+Stale pre-upgrade dirs are not auto-pruned. Manual: list live workers via `browserctl list`, remove only unleased `profiles/scratch/<w>` + `state/<w>` after confirming no daemon/chrome.
+
 ### xAI coal (identity_ops)
 
 ```bash
@@ -85,11 +99,17 @@ Resolve is **exact** (never fuzzy):
 
 ./bin/browserctl profiles register lab-vpn --kind vpn --worker vpn-se-sto --country Sweden --json
 ./bin/browserctl profiles register lab-scratch --kind scratch --label demo --json
+# better: pin worker for a stable lab browser
+./bin/browserctl profiles register lab-scratch --kind scratch --worker scratch-lab --label demo --json
 ./bin/browserctl profiles list --json
 ./bin/browserctl profiles show coal-demo --json
 ```
 
 `register --replace` overwrites launch and keeps associations.
+
+Named `scratch`/`adhoc` profiles are a **finite stable pool**: `--profile NAME` reuses
+`launch.worker` or derived `scratch-profile-<name>` (no `ephemeral_wipe_v1`).
+See [Ephemeral vs stable scratch](#ephemeral-vs-stable-scratch).
 
 #### Launch / acquire by name (`--profile`)
 
@@ -136,6 +156,7 @@ Strict selector exclusion on resolve: account filter is exact; accountless resol
 10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `lease.profile_name` + `env.BROWSERCTL_PROFILE_NAME`.
 11. **Association learning** is explicit: after a successful login to a new site/account, run `profiles associate <name> <site> [account]` — never invent associations from URL heuristics.
 12. **Release/unwatch** clean up watch panes; orchestrator owns `finally`.
+13. **Wipe only with `ephemeral_wipe_v1`** (new token workers); legacy `ephemeral_profile` alone never deletes dirs; named/explicit-worker scratches are stable.
 
 ---
 
