@@ -1,5 +1,19 @@
 {
   "profiles": {
+    "github-ata": {
+      "associations": [
+        {
+          "account": "atacolak",
+          "site": "github.com"
+        }
+      ],
+      "created_at": "2026-07-29T15:27:39Z",
+      "launch": {
+        "kind": "scratch",
+        "label": "github-ata"
+      },
+      "updated_at": "2026-07-29T15:27:39Z"
+    },
     "scratch-general-1": {
       "associations": [],
       "created_at": "2026-07-29T14:34:11Z",
