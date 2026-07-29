@@ -218,8 +218,9 @@ def test_xai_conflict_even_if_meta_forget_attached(tmp_path: Path):
 
 def test_scratch_port_alloc_lock_serializes_select(tmp_path: Path, monkeypatch):
     """Parallel no_start acquires under same state_root get unique ports."""
-    state = tmp_path / "state"
-    state.mkdir()
+    root = tmp_path / "ops"
+    state = root / "state"
+    state.mkdir(parents=True)
     # Shrink range to force contention on a tiny set of free ports.
     monkeypatch.setattr(scratch_mod, "PORT_MIN", 19000)
     monkeypatch.setattr(scratch_mod, "PORT_MAX", 19020)
@@ -245,7 +246,7 @@ def test_scratch_port_alloc_lock_serializes_select(tmp_path: Path, monkeypatch):
             barrier.wait(timeout=5)
             out = scratch_mod.acquire(
                 {
-                    "root": str(ROOT),
+                    "root": str(root),
                     "state_root": str(state),
                     "label": f"p{i}",
                     "no_start": True,
@@ -272,8 +273,9 @@ def test_scratch_port_alloc_lock_serializes_select(tmp_path: Path, monkeypatch):
 
 def test_scratch_port_bind_retry_on_race(tmp_path: Path, monkeypatch):
     """If first selected port becomes busy before return, retry yields another."""
-    state = tmp_path / "state"
-    state.mkdir()
+    root = tmp_path / "ops"
+    state = root / "state"
+    state.mkdir(parents=True)
     monkeypatch.setattr(scratch_mod, "PORT_MIN", 19100)
     monkeypatch.setattr(scratch_mod, "PORT_MAX", 19105)
 
@@ -298,7 +300,7 @@ def test_scratch_port_bind_retry_on_race(tmp_path: Path, monkeypatch):
         with pytest.raises(AdapterError):
             scratch_mod.acquire(
                 {
-                    "root": str(ROOT),
+                    "root": str(root),
                     "state_root": str(state),
                     "cdp_port": 19100,
                     "no_start": True,
@@ -306,7 +308,7 @@ def test_scratch_port_bind_retry_on_race(tmp_path: Path, monkeypatch):
             )
         out = scratch_mod.acquire(
             {
-                "root": str(ROOT),
+                "root": str(root),
                 "state_root": str(state),
                 "no_start": True,
                 "label": "retry",

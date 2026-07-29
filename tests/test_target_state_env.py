@@ -59,11 +59,12 @@ def test_cloak_browser_ops_state_root(tmp_path: Path, monkeypatch):
 
 
 def test_scratch_daemon_env_matches_lease_target(tmp_path: Path):
-    state = tmp_path / "state"
-    state.mkdir()
+    root = tmp_path / "ops"
+    state = root / "state"
+    state.mkdir(parents=True)
     out = scratch_mod.acquire(
         {
-            "root": str(ROOT),
+            "root": str(root),
             "state_root": str(state),
             "label": "align",
             "no_start": True,
@@ -76,7 +77,7 @@ def test_scratch_daemon_env_matches_lease_target(tmp_path: Path):
     assert Path(out["env"]["BROWSER_OPS_STATE"]).resolve() == state.resolve()
     assert Path(out["env"]["BROWSER_TARGET_STATE"]).resolve() == tsp
 
-    m = Manager(root=ROOT, state_root=state)
+    m = Manager(root=root, state_root=state)
 
     class A:
         def acquire(self, req):
@@ -108,9 +109,10 @@ def test_live_like_publish_under_state_root_override(tmp_path: Path, monkeypatch
     browserctl --state-root /tmp/... then daemon child env:
     cloak publishes where lease.resources.target_state_path points.
     """
-    state = tmp_path / "state"
-    state.mkdir()
-    m = Manager(root=ROOT, state_root=state)
+    root = tmp_path / "ops"
+    state = root / "state"
+    state.mkdir(parents=True)
+    m = Manager(root=root, state_root=state)
     captured_env: dict[str, str] = {}
 
     class ScratchCapture:
