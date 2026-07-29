@@ -29,14 +29,19 @@ Cookies **are** the person. Do not share browsers across accounts.
 
 ./bin/browserctl launch --kind scratch --label demo --json
 ./bin/browserctl watch --lease <id> --agent-pane <nav-pane> --json
+# waits CDP + non-null active_target_id; default agent 25% / browser 75%
 
-# named lookup (emit launch args only; no browser start)
-./bin/browserctl profiles resolve x.ai --account 'USER@host' --json
+# named registry
+./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
+./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json   # after proven login
+./bin/browserctl profiles resolve x.ai --account 'USER@host' --json     # emit only
+./bin/browserctl launch --profile coal-demo --json   # stamps BROWSERCTL_PROFILE_NAME
 ```
 
-- Returns navigator `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, …).
+- Returns navigator `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, …).
 - Enforces **one mutation lease per worker**; refuses managed **`default`**.
 - xAI path calls **`identity_ops`**.
+- `--profile` is exclusive with launch selector flags; associations are explicit (never URL-inferred).
 
 Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md).
 

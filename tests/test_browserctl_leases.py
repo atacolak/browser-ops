@@ -277,7 +277,7 @@ def test_watch_binds_pane_ids(mgr):
         "agent_pane_id": "w1:p1",
         "watch_pane_id": "w1:p2",
         "direction": "right",
-        "ratio": 0.42,
+        "ratio": 0.25,
         "env": {
             "HERDR_BROWSER_MODE": "observe_mirror",
             "HERDR_BROWSER_TARGET_STATE": "/tmp/t.json",

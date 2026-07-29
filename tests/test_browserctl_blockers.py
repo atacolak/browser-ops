@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -425,3 +426,540 @@ def test_watch_persists_herdr_endpoint(tmp_path: Path, monkeypatch):
     assert lease["watch"]["herdr_socket"] == "/tmp/watch-test.sock"
     assert lease["watch"]["herdr_session"] == "s1"
     assert w["mirror_env"]["HERDR_BROWSER_MODE"] == "observe_mirror"
+
+
+# ── 5. watch readiness (cold-start race) ─────────────────────────────────────
+
+
+def test_default_ratio_is_agent_25_browser_75():
+    assert watch_mod.DEFAULT_RATIO == 0.25
+    assert watch_mod.normalize_ratio(None) == 0.25
+    assert watch_mod.normalize_ratio(0.25) == 0.25
+    assert watch_mod.normalize_ratio(0.5) == 0.5
+    # herdr clamps to [0.1, 0.9]
+    assert watch_mod.normalize_ratio(0.05) == 0.1
+    assert watch_mod.normalize_ratio(0.95) == 0.9
+    with pytest.raises(InvalidRequest):
+        watch_mod.normalize_ratio(0.0)
+    with pytest.raises(InvalidRequest):
+        watch_mod.normalize_ratio(1.0)
+    with pytest.raises(InvalidRequest):
+        watch_mod.normalize_ratio("nope")
+
+
+def test_target_state_is_ready_requires_non_null_id():
+    assert watch_mod.target_state_is_ready(None) is False
+    assert watch_mod.target_state_is_ready({}) is False
+    assert watch_mod.target_state_is_ready({"active_target_id": None}) is False
+    assert watch_mod.target_state_is_ready({"active_target_id": ""}) is False
+    assert watch_mod.target_state_is_ready({"active_target_id": "  "}) is False
+    assert watch_mod.target_state_is_ready({"active_target_id": "T-1"}) is True
+    # mismatched cdp_url blocks
+    assert (
+        watch_mod.target_state_is_ready(
+            {"active_target_id": "T-1", "cdp_url": "http://127.0.0.1:1"},
+            expected_cdp_url="http://127.0.0.1:2",
+        )
+        is False
+    )
+    # matching / omitted cdp_url ok
+    assert (
+        watch_mod.target_state_is_ready(
+            {"active_target_id": "T-1", "cdp_url": "http://127.0.0.1:9/"},
+            expected_cdp_url="http://127.0.0.1:9",
+        )
+        is True
+    )
+    assert (
+        watch_mod.target_state_is_ready(
+            {"active_target_id": "T-1"},
+            expected_cdp_url="http://127.0.0.1:9",
+        )
+        is True
+    )
+
+
+def test_wait_for_watch_readiness_success(tmp_path: Path, monkeypatch):
+    target = tmp_path / "active-target.json"
+    cdp_url = "http://127.0.0.1:19301"
+
+    # CDP becomes ready immediately; target id arrives after a short delay.
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": True, "status": 200, "body_keys": ["webSocketDebuggerUrl"]},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {
+            "ok": True,
+            "status": 200,
+            "count": 1,
+            "ids": ["TARGET-READY"],
+        },
+    )
+
+    state = {"n": 0}
+
+    def delayed_snapshot(path):
+        state["n"] += 1
+        if state["n"] < 3:
+            if state["n"] == 1:
+                return None
+            return {
+                "version": 1,
+                "worker_id": "w",
+                "active_target_id": None,
+                "seq": 1,
+                "cdp_url": cdp_url,
+            }
+        return {
+            "version": 1,
+            "worker_id": "w",
+            "active_target_id": "TARGET-READY",
+            "seq": 2,
+            "cdp_url": cdp_url,
+            "page": {"url": "https://example.com/", "title": "ex"},
+        }
+
+    monkeypatch.setattr(watch_mod, "read_target_state_snapshot", delayed_snapshot)
+    out = watch_mod.wait_for_watch_readiness(
+        cdp_url=cdp_url,
+        target_state_path=target,
+        timeout_s=2.0,
+        poll_s=0.01,
+    )
+    assert out["ok"] is True
+    assert out["active_target_id"] == "TARGET-READY"
+    assert out["attempts"] >= 3
+    assert out["cdp_list"]["matched_id"] == "TARGET-READY"
+
+
+def test_wait_for_watch_readiness_timeout_null_target(tmp_path: Path, monkeypatch):
+    target = tmp_path / "active-target.json"
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "worker_id": "w",
+                "active_target_id": None,
+                "seq": 1,
+                "cdp_url": "http://127.0.0.1:19302",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": True, "status": 200},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {"ok": True, "status": 200, "count": 0, "ids": []},
+    )
+    with pytest.raises(AdapterError) as ei:
+        watch_mod.wait_for_watch_readiness(
+            cdp_url="http://127.0.0.1:19302",
+            target_state_path=target,
+            timeout_s=0.15,
+            poll_s=0.05,
+        )
+    err = ei.value
+    assert err.code == "ADAPTER_ERROR"
+    msg = err.message.lower()
+    assert "readiness timed out" in msg or "timed out" in msg
+    assert "about:blank" in msg or "null" in msg
+    assert err.details.get("reasons")
+    assert err.details.get("target_state", {}).get("active_target_id") is None
+    assert "hint" in err.details
+
+
+def test_wait_for_watch_readiness_timeout_cdp_down(tmp_path: Path, monkeypatch):
+    target = tmp_path / "active-target.json"
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "worker_id": "w",
+                "active_target_id": "T-ok",
+                "seq": 1,
+                "cdp_url": "http://127.0.0.1:19303",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": False, "error": "ConnectionRefusedError: down"},
+    )
+    with pytest.raises(AdapterError) as ei:
+        watch_mod.wait_for_watch_readiness(
+            cdp_url="http://127.0.0.1:19303",
+            target_state_path=target,
+            timeout_s=0.12,
+            poll_s=0.04,
+        )
+    assert "cdp" in ei.value.message.lower()
+    assert ei.value.details["cdp"]["ok"] is False
+
+
+def test_start_watch_does_not_seed_null_target(tmp_path: Path, monkeypatch):
+    """Regression: watch must never write null active_target_id stub."""
+    state = tmp_path / "state"
+    state.mkdir()
+    worker = "scratch-ready"
+    target = state / worker / "control" / "active-target.json"
+    # parent will be created by start_watch; file must NOT be pre-seeded null
+    assert not target.exists()
+
+    lease = {
+        "lease_id": "L1",
+        "worker_id": worker,
+        "resources": {
+            "cdp_url": "http://127.0.0.1:19304",
+            "cdp_port": 19304,
+            "target_state_path": str(target),
+        },
+    }
+
+    monkeypatch.setenv("HERDR_SOCKET_PATH", "/tmp/watch-ready.sock")
+    good = _capable_viewer(tmp_path / "viewer")
+    monkeypatch.setenv("HERDR_BROWSER_ROOT", str(good))
+
+    # Fail readiness quickly — prove we never wrote a null stub in the attempt.
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": False, "error": "down"},
+    )
+    with pytest.raises(AdapterError):
+        watch_mod.start_watch(
+            lease,
+            state_root=state,
+            agent_pane="w1:p1",
+            herdr_socket="/tmp/watch-ready.sock",
+            ready_timeout_s=0.1,
+            ready_poll_s=0.05,
+        )
+    assert not target.exists(), "must not seed null active-target stub on cold start"
+
+
+def test_start_watch_waits_then_splits(tmp_path: Path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    worker = "scratch-live"
+    target = state / worker / "control" / "active-target.json"
+    target.parent.mkdir(parents=True)
+    cdp_url = "http://127.0.0.1:19305"
+
+    lease = {
+        "lease_id": "L2",
+        "worker_id": worker,
+        "resources": {
+            "cdp_url": cdp_url,
+            "cdp_port": 19305,
+            "target_state_path": str(target),
+        },
+    }
+
+    monkeypatch.setenv("HERDR_SOCKET_PATH", "/tmp/watch-live.sock")
+    good = _capable_viewer(tmp_path / "viewer")
+    monkeypatch.setenv("HERDR_BROWSER_ROOT", str(good))
+
+    # Publish target mid-wait.
+    calls = {"n": 0}
+
+    def fake_cdp(url, timeout=2.0):
+        return {"ok": True, "status": 200}
+
+    def fake_snap(path):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return {"version": 1, "active_target_id": None, "seq": 1, "cdp_url": cdp_url}
+        return {
+            "version": 1,
+            "active_target_id": "TAB-9",
+            "seq": 2,
+            "cdp_url": cdp_url,
+            "page": {"url": "https://example.test/"},
+        }
+
+    monkeypatch.setattr(watch_mod, "cdp_version_ok", fake_cdp)
+    monkeypatch.setattr(watch_mod, "read_target_state_snapshot", fake_snap)
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {
+            "ok": True,
+            "status": 200,
+            "count": 1,
+            "ids": ["TAB-9"],
+        },
+    )
+
+    split_calls: list[dict[str, Any]] = []
+
+    def fake_split(**kwargs):
+        split_calls.append(kwargs)
+        return "w1:watch"
+
+    monkeypatch.setattr(watch_mod, "split_watch_pane", fake_split)
+    monkeypatch.setattr(watch_mod, "run_in_pane", lambda *a, **k: None)
+    monkeypatch.setattr(watch_mod, "resolve_agent_pane", lambda pane, endpoint: "w1:agent")
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        watch_mod,
+        "wait_for_viewer_process",
+        lambda pane_id, endpoint, timeout_s=3.0, poll_s=0.15: {
+            "ok": True,
+            "pane_id": pane_id,
+            "attempts": 1,
+            "elapsed_s": 0.01,
+            "process": {
+                "ok": True,
+                "matched": ["viewer.ts"],
+                "pids": [4242],
+            },
+        },
+    )
+
+    rec = watch_mod.start_watch(
+        lease,
+        state_root=state,
+        agent_pane="w1:agent",
+        herdr_socket="/tmp/watch-live.sock",
+        ready_timeout_s=2.0,
+        ready_poll_s=0.01,
+        # default ratio
+    )
+    assert rec["watch_pane_id"] == "w1:watch"
+    assert rec["ratio"] == 0.25
+    assert rec["readiness"]["active_target_id"] == "TAB-9"
+    assert split_calls and split_calls[0]["ratio"] == 0.25
+    assert rec["env"]["HERDR_BROWSER_MODE"] == "observe_mirror"
+    assert rec["env"]["HERDR_BROWSER_CDP_URL"] == cdp_url
+    assert rec["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+    assert split_calls[0]["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+    assert rec["viewer_start"]["ok"] is True
+    assert rec["viewer_start"]["matched"] == ["viewer.ts"]
+
+    # explicit override preserved
+    rec2 = watch_mod.start_watch(
+        lease,
+        state_root=state,
+        agent_pane="w1:agent",
+        herdr_socket="/tmp/watch-live.sock",
+        ratio=0.4,
+        ready_timeout_s=2.0,
+        ready_poll_s=0.01,
+    )
+    assert rec2["ratio"] == 0.4
+
+
+def test_build_mirror_env_sets_watch_resize(tmp_path: Path):
+    env = watch_mod.build_mirror_env(
+        cdp_url="http://127.0.0.1:9333",
+        target_state_path=tmp_path / "active-target.json",
+        viewer_root=tmp_path / "viewer",
+    )
+    assert env["HERDR_BROWSER_MODE"] == "observe_mirror"
+    assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+    assert env["HERDR_BROWSER_CDP_URL"] == "http://127.0.0.1:9333"
+    assert env["HERDR_BROWSER_TARGET_STATE"] == str(tmp_path / "active-target.json")
+    assert env["HERDR_BROWSER_ROOT"] == str(tmp_path / "viewer")
+
+
+def test_wait_for_watch_readiness_rejects_stale_target_not_in_list(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "active-target.json"
+    cdp_url = "http://127.0.0.1:19311"
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "worker_id": "w",
+                "active_target_id": "STALE-ID",
+                "seq": 9,
+                "cdp_url": cdp_url,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": True, "status": 200},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {
+            "ok": True,
+            "status": 200,
+            "count": 1,
+            "ids": ["LIVE-OTHER"],
+        },
+    )
+    with pytest.raises(AdapterError) as ei:
+        watch_mod.wait_for_watch_readiness(
+            cdp_url=cdp_url,
+            target_state_path=target,
+            timeout_s=0.15,
+            poll_s=0.05,
+        )
+    msg = ei.value.message.lower()
+    assert "json/list" in msg or "stale" in msg or "missing" in msg
+    assert "STALE-ID" in ei.value.message
+    assert ei.value.details.get("reasons")
+    assert ei.value.details.get("cdp_list", {}).get("ok") is True
+
+
+def test_wait_for_watch_readiness_accepts_when_list_contains_id(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "active-target.json"
+    cdp_url = "http://127.0.0.1:19312"
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "worker_id": "w",
+                "active_target_id": "LIVE-1",
+                "seq": 2,
+                "cdp_url": cdp_url,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": True, "status": 200},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {
+            "ok": True,
+            "status": 200,
+            "count": 2,
+            "ids": ["OTHER", "LIVE-1"],
+        },
+    )
+    out = watch_mod.wait_for_watch_readiness(
+        cdp_url=cdp_url,
+        target_state_path=target,
+        timeout_s=1.0,
+        poll_s=0.01,
+    )
+    assert out["ok"] is True
+    assert out["active_target_id"] == "LIVE-1"
+    assert out["cdp_list"]["matched_id"] == "LIVE-1"
+
+
+def test_viewer_process_started_matches_markers():
+    ok = watch_mod.viewer_process_started(
+        {
+            "shell_pid": 1,
+            "foreground_processes": [
+                {
+                    "pid": 99,
+                    "name": "bun",
+                    "cmdline": "bun run /tmp/herdr-browser/src/viewer.ts",
+                    "argv": ["bun", "run", "/tmp/herdr-browser/src/viewer.ts"],
+                }
+            ],
+        }
+    )
+    assert ok["ok"] is True
+    assert "viewer.ts" in ok["matched"]
+    bad = watch_mod.viewer_process_started(
+        {
+            "shell_pid": 1,
+            "foreground_processes": [
+                {"pid": 2, "name": "bash", "cmdline": "bash"},
+            ],
+        }
+    )
+    assert bad["ok"] is False
+
+
+def test_start_watch_closes_pane_when_viewer_fails_to_start(tmp_path: Path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    worker = "scratch-viewer-fail"
+    target = state / worker / "control" / "active-target.json"
+    target.parent.mkdir(parents=True)
+    cdp_url = "http://127.0.0.1:19313"
+    target.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_target_id": "TAB-OK",
+                "seq": 1,
+                "cdp_url": cdp_url,
+            }
+        )
+    )
+    lease = {
+        "lease_id": "L3",
+        "worker_id": worker,
+        "resources": {
+            "cdp_url": cdp_url,
+            "cdp_port": 19313,
+            "target_state_path": str(target),
+        },
+    }
+    monkeypatch.setenv("HERDR_SOCKET_PATH", "/tmp/watch-viewer-fail.sock")
+    good = _capable_viewer(tmp_path / "viewer")
+    monkeypatch.setenv("HERDR_BROWSER_ROOT", str(good))
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_version_ok",
+        lambda url, timeout=2.0: {"ok": True, "status": 200},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "cdp_list_targets",
+        lambda url, timeout=2.0: {
+            "ok": True,
+            "status": 200,
+            "count": 1,
+            "ids": ["TAB-OK"],
+        },
+    )
+    monkeypatch.setattr(watch_mod, "split_watch_pane", lambda **k: "w1:orphan")
+    monkeypatch.setattr(watch_mod, "run_in_pane", lambda *a, **k: None)
+    monkeypatch.setattr(watch_mod, "resolve_agent_pane", lambda pane, endpoint: "w1:agent")
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    closed: list[str] = []
+
+    def fake_close(pane_id, endpoint=None):
+        closed.append(pane_id)
+
+    monkeypatch.setattr(watch_mod, "close_pane", fake_close)
+
+    def boom(pane_id, endpoint, timeout_s=3.0, poll_s=0.15):
+        raise AdapterError(
+            "watch viewer process did not start in pane",
+            pane_id=pane_id,
+            process={"ok": False, "foreground_count": 0},
+        )
+
+    monkeypatch.setattr(watch_mod, "wait_for_viewer_process", boom)
+
+    with pytest.raises(AdapterError) as ei:
+        watch_mod.start_watch(
+            lease,
+            state_root=state,
+            agent_pane="w1:agent",
+            herdr_socket="/tmp/watch-viewer-fail.sock",
+            ready_timeout_s=1.0,
+            ready_poll_s=0.01,
+        )
+    assert closed == ["w1:orphan"]
+    assert ei.value.details.get("closed_on_failure") is True
+    assert ei.value.details.get("watch_pane_id") == "w1:orphan"
+

@@ -6,6 +6,18 @@ Contract with herdr-browser:
   HERDR_BROWSER_TARGET_STATE=<active-target.json path>
   HERDR_BROWSER_CDP_URL=http://127.0.0.1:<port>
 
+Cold-start race:
+  Do NOT seed a null active_target_id (that opens a permanent about:blank
+  mirror). Wait until CDP answers /json/version, active-target.json has a
+  non-null active_target_id from the harness daemon, AND that id appears in
+  CDP /json/list (rejects stale published state). Bounded wait; fail with a
+  diagnostic if readiness never settles.
+
+Viewer live stream:
+  Watch panes must set HERDR_BROWSER_VIEWER_WATCH_RESIZE=1 so observe_mirror
+  enters the resize/graphics-stream loop (otherwise daemon metrics stay
+  graphics_stream.active=false / frames=0).
+
 Viewer root (prefer/require observe_mirror capability), first match wins:
   1. HERDR_BROWSER_ROOT env
   2. BROWSERCTL_VIEWER_ROOT env
@@ -19,6 +31,11 @@ Herd session targeting (fail closed if ambiguous):
   --herdr-session / HERDR_SESSION
   --herdr-socket  / HERDR_SOCKET_PATH
   Persisted on the lease watch record; used for every herdr call.
+
+Split ratio (herdr pane split --ratio):
+  ratio = first-child fraction. Direction right keeps the agent pane as first
+  child (left) and the new watch pane as second (right). Default 0.25 → agent
+  25% / browser 75%. Explicit --ratio always wins.
 """
 
 from __future__ import annotations
@@ -29,6 +46,8 @@ import shlex
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +59,24 @@ from browserctl.paths import (
     resolve_state_root,
 )
 
-DEFAULT_RATIO = 0.42
+# herdr: ratio is first-child fraction. direction=right → agent left, watch right.
+DEFAULT_RATIO = 0.25
 VIEWER_ROOT_FILENAME = "viewer-root"
+
+# Bounded cold-start wait before failing watch with diagnostics.
+DEFAULT_READY_TIMEOUT_S = 20.0
+DEFAULT_READY_POLL_S = 0.25
+
+# After pane run: bounded verify that the viewer process actually started.
+DEFAULT_VIEWER_START_TIMEOUT_S = 3.0
+DEFAULT_VIEWER_START_POLL_S = 0.15
+
+# Substrings that indicate the observe_mirror viewer is running in the pane.
+_VIEWER_PROCESS_MARKERS = (
+    "viewer.ts",
+    "herdr-browser",
+    "observe_mirror",
+)
 
 # Preferred viewer roots — only used when they pass observe_mirror capability probe.
 # Env / viewer-root file overrides always win when set (see resolve_viewer_cwd).
@@ -430,6 +465,145 @@ def close_pane(pane_id: str, *, endpoint: dict[str, str] | None = None) -> None:
         pass
 
 
+def pane_process_info(
+    pane_id: str,
+    *,
+    endpoint: dict[str, str],
+) -> dict[str, Any]:
+    """Fetch herdr pane process-info envelope (best-effort structured)."""
+    return _run_herdr(["pane", "process-info", "--pane", pane_id], endpoint=endpoint)
+
+
+def _process_info_blob(resp: dict[str, Any]) -> dict[str, Any]:
+    """Normalize herdr process-info JSON into a flat process_info dict."""
+    if not isinstance(resp, dict):
+        return {}
+    result = resp.get("result") if isinstance(resp.get("result"), dict) else resp
+    if not isinstance(result, dict):
+        return {}
+    info = result.get("process_info")
+    if isinstance(info, dict):
+        return info
+    # Some envelopes put fields at the result root.
+    if "foreground_processes" in result or "shell_pid" in result:
+        return result
+    return {}
+
+
+def _viewer_markers_in_text(text: str) -> list[str]:
+    low = text.lower()
+    return [m for m in _VIEWER_PROCESS_MARKERS if m.lower() in low]
+
+
+def viewer_process_started(process_info: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Decide whether pane process-info shows the observe_mirror viewer running.
+
+    Matches bun/node running viewer.ts / herdr-browser markers in foreground
+    process name/argv/cmdline. Returns {ok, matched?, pids?, sample?}.
+    """
+    info = process_info if isinstance(process_info, dict) else {}
+    procs = info.get("foreground_processes") or []
+    if not isinstance(procs, list):
+        procs = []
+    matched: list[str] = []
+    pids: list[int] = []
+    samples: list[str] = []
+    for proc in procs:
+        if not isinstance(proc, dict):
+            continue
+        parts: list[str] = []
+        for key in ("name", "argv0", "cmdline"):
+            val = proc.get(key)
+            if isinstance(val, str) and val.strip():
+                parts.append(val)
+        argv = proc.get("argv")
+        if isinstance(argv, list):
+            parts.extend(str(a) for a in argv if a is not None)
+        blob = " ".join(parts)
+        if blob:
+            samples.append(blob[:200])
+        hits = _viewer_markers_in_text(blob)
+        if hits:
+            matched.extend(hits)
+            pid = proc.get("pid")
+            if isinstance(pid, int):
+                pids.append(pid)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    matched_u = []
+    for m in matched:
+        if m not in seen:
+            seen.add(m)
+            matched_u.append(m)
+    return {
+        "ok": bool(matched_u),
+        "matched": matched_u,
+        "pids": pids,
+        "shell_pid": info.get("shell_pid"),
+        "sample": samples[:3],
+        "foreground_count": len(procs),
+    }
+
+
+def wait_for_viewer_process(
+    pane_id: str,
+    *,
+    endpoint: dict[str, str],
+    timeout_s: float = DEFAULT_VIEWER_START_TIMEOUT_S,
+    poll_s: float = DEFAULT_VIEWER_START_POLL_S,
+) -> dict[str, Any]:
+    """
+    Poll herdr pane process-info until the viewer appears or timeout.
+
+    Raises AdapterError with last process snapshot on failure.
+    """
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    poll = max(0.05, float(poll_s))
+    attempts = 0
+    started = time.monotonic()
+    last_check: dict[str, Any] = {"ok": False, "error": "not probed"}
+    last_error: str | None = None
+
+    while True:
+        attempts += 1
+        try:
+            last_resp = pane_process_info(pane_id, endpoint=endpoint)
+            info = _process_info_blob(last_resp)
+            last_check = viewer_process_started(info)
+            if last_check.get("ok"):
+                return {
+                    "ok": True,
+                    "pane_id": pane_id,
+                    "attempts": attempts,
+                    "elapsed_s": round(time.monotonic() - started, 3),
+                    "process": last_check,
+                }
+            last_error = None
+        except AdapterError as e:
+            last_error = e.message
+            last_check = {"ok": False, "error": e.message, "details": e.details}
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll)
+
+    raise AdapterError(
+        "watch viewer process did not start in pane "
+        f"{pane_id!r} within {float(timeout_s):g}s",
+        pane_id=pane_id,
+        timeout_s=float(timeout_s),
+        attempts=attempts,
+        elapsed_s=round(time.monotonic() - started, 3),
+        process=last_check,
+        last_error=last_error,
+        hint=(
+            "confirm herdr pane run launched bun src/viewer.ts with "
+            "HERDR_BROWSER_VIEWER_WATCH_RESIZE=1; close orphan split panes"
+        ),
+    )
+
+
 def build_mirror_env(
     *,
     cdp_url: str,
@@ -441,12 +615,317 @@ def build_mirror_env(
         "HERDR_BROWSER_MODE": "observe_mirror",
         "HERDR_BROWSER_TARGET_STATE": str(target_state_path),
         "HERDR_BROWSER_CDP_URL": str(cdp_url).rstrip("/"),
+        # Required for live resize + graphics stream loop in herdr-browser
+        # viewer (shouldWatchResize). Without this, daemon metrics stay
+        # graphics_stream.active=false / frames=0 after a one-shot render.
+        "HERDR_BROWSER_VIEWER_WATCH_RESIZE": "1",
     }
     if viewer_root is not None:
         env["HERDR_BROWSER_ROOT"] = str(viewer_root)
     if extra:
         env.update(extra)
     return env
+
+
+def normalize_ratio(ratio: float | None) -> float:
+    """Clamp herdr first-child ratio into the valid (0.1, 0.9) band."""
+    if ratio is None:
+        return DEFAULT_RATIO
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError) as e:
+        raise InvalidRequest(f"invalid watch ratio: {ratio!r}") from e
+    if not (value == value) or value <= 0 or value >= 1:  # NaN / out of range
+        raise InvalidRequest(
+            f"watch ratio must be between 0 and 1 exclusive (got {value})",
+            ratio=value,
+        )
+    # Match herdr valid_split_ratio clamp so CLI and runtime agree.
+    return max(0.1, min(0.9, value))
+
+
+def cdp_version_ok(cdp_url: str, *, timeout: float = 2.0) -> dict[str, Any]:
+    """Probe CDP HTTP /json/version. Returns {ok, status?, error?, body_keys?}."""
+    url = str(cdp_url).rstrip("/") + "/json/version"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+            status = getattr(resp, "status", 200) or 200
+            try:
+                payload = json.loads(body.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                return {
+                    "ok": False,
+                    "status": status,
+                    "error": "cdp /json/version returned non-JSON",
+                }
+            if status != 200:
+                return {"ok": False, "status": status, "error": f"HTTP {status}"}
+            return {
+                "ok": True,
+                "status": status,
+                "body_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
+            }
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+
+
+def cdp_list_targets(cdp_url: str, *, timeout: float = 2.0) -> dict[str, Any]:
+    """Fetch CDP HTTP /json/list. Returns {ok, targets?, ids?, error?, status?}."""
+    url = str(cdp_url).rstrip("/") + "/json/list"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+            status = getattr(resp, "status", 200) or 200
+            try:
+                payload = json.loads(body.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                return {
+                    "ok": False,
+                    "status": status,
+                    "error": "cdp /json/list returned non-JSON",
+                }
+            if status != 200:
+                return {"ok": False, "status": status, "error": f"HTTP {status}"}
+            if not isinstance(payload, list):
+                return {
+                    "ok": False,
+                    "status": status,
+                    "error": "cdp /json/list returned non-list",
+                }
+            ids: list[str] = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                tid = item.get("id")
+                if isinstance(tid, str) and tid.strip():
+                    ids.append(tid.strip())
+            return {
+                "ok": True,
+                "status": status,
+                "count": len(payload),
+                "ids": ids,
+            }
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def cdp_list_has_target(
+    list_probe: dict[str, Any] | None,
+    target_id: str | None,
+) -> bool:
+    """True when /json/list succeeded and contains target_id."""
+    if not isinstance(list_probe, dict) or not list_probe.get("ok"):
+        return False
+    if not isinstance(target_id, str) or not target_id.strip():
+        return False
+    ids = list_probe.get("ids") or []
+    if not isinstance(ids, list):
+        return False
+    want = target_id.strip()
+    return any(isinstance(i, str) and i.strip() == want for i in ids)
+
+
+def read_target_state_snapshot(path: Path | str) -> dict[str, Any] | None:
+    """Best-effort read of active-target.json (None if missing/unreadable)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def target_state_is_ready(
+    doc: dict[str, Any] | None,
+    *,
+    expected_cdp_url: str | None = None,
+) -> bool:
+    """
+    Ready when harness published a non-null active_target_id.
+
+    A null id is the cold-start / cleared state — opening observe_mirror on it
+    yields a permanent detached/about:blank mirror. Optional CDP URL match is
+    soft (warn via diagnostics) so path-only mismatches do not block forever.
+    """
+    if not isinstance(doc, dict):
+        return False
+    tid = doc.get("active_target_id")
+    if not isinstance(tid, str) or not tid.strip():
+        return False
+    if expected_cdp_url:
+        published = str(doc.get("cdp_url") or "").rstrip("/")
+        expect = str(expected_cdp_url).rstrip("/")
+        # If publisher omitted cdp_url, still accept non-null target id.
+        if published and expect and published != expect:
+            return False
+    return True
+
+
+def wait_for_watch_readiness(
+    *,
+    cdp_url: str,
+    target_state_path: str | Path,
+    timeout_s: float = DEFAULT_READY_TIMEOUT_S,
+    poll_s: float = DEFAULT_READY_POLL_S,
+    require_target_id: bool = True,
+    require_cdp_list_match: bool = True,
+) -> dict[str, Any]:
+    """
+    Block until CDP is up and (by default) active-target has a live target id.
+
+    Ready when:
+      1. CDP /json/version is 200
+      2. active-target.json has a non-null active_target_id (and optional cdp match)
+      3. that id exists in CDP /json/list (rejects stale published state)
+
+    Returns a readiness record. Raises AdapterError with bounded diagnostics
+    when the deadline expires without settling.
+    """
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    poll = max(0.05, float(poll_s))
+    target_path = Path(target_state_path)
+    last_cdp: dict[str, Any] = {"ok": False, "error": "not probed"}
+    last_list: dict[str, Any] = {"ok": False, "error": "not probed"}
+    last_doc: dict[str, Any] | None = None
+    attempts = 0
+    started = time.monotonic()
+
+    while True:
+        attempts += 1
+        last_cdp = cdp_version_ok(cdp_url)
+        last_doc = read_target_state_snapshot(target_path)
+        cdp_ready = bool(last_cdp.get("ok"))
+        target_ready = (
+            target_state_is_ready(last_doc, expected_cdp_url=cdp_url)
+            if require_target_id
+            else last_doc is not None
+        )
+        list_ready = True
+        active_id = (
+            (last_doc or {}).get("active_target_id")
+            if isinstance(last_doc, dict)
+            else None
+        )
+        if require_cdp_list_match and require_target_id and target_ready:
+            last_list = cdp_list_targets(cdp_url)
+            list_ready = cdp_list_has_target(
+                last_list, active_id if isinstance(active_id, str) else None
+            )
+        elif not require_cdp_list_match:
+            last_list = {"ok": True, "skipped": True, "ids": []}
+
+        if cdp_ready and target_ready and list_ready:
+            return {
+                "ok": True,
+                "cdp": last_cdp,
+                "cdp_list": {
+                    "ok": bool(last_list.get("ok")),
+                    "count": last_list.get("count"),
+                    "matched_id": active_id if isinstance(active_id, str) else None,
+                    "skipped": bool(last_list.get("skipped")),
+                },
+                "target_state": last_doc,
+                "target_state_path": str(target_path),
+                "attempts": attempts,
+                "elapsed_s": round(time.monotonic() - started, 3),
+                "active_target_id": active_id,
+            }
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll)
+
+    # Build a compact diagnostic — never dump secrets (target state has none).
+    reasons: list[str] = []
+    if not last_cdp.get("ok"):
+        reasons.append(
+            f"cdp not ready ({last_cdp.get('error') or last_cdp.get('status') or 'unknown'})"
+        )
+    if require_target_id and not target_state_is_ready(last_doc, expected_cdp_url=cdp_url):
+        if last_doc is None:
+            if target_path.exists():
+                reasons.append(
+                    f"active-target unreadable or invalid at {target_path}"
+                )
+            else:
+                reasons.append(
+                    f"active-target missing at {target_path} "
+                    "(daemon has not published yet)"
+                )
+        else:
+            tid = last_doc.get("active_target_id")
+            if tid is None or tid == "":
+                reasons.append(
+                    "active_target_id is null/empty — refusing permanent "
+                    "about:blank observe_mirror; wait for harness publish"
+                )
+            else:
+                reasons.append(
+                    f"active-target not ready (id={tid!r}, "
+                    f"cdp_url={last_doc.get('cdp_url')!r})"
+                )
+    elif require_cdp_list_match and require_target_id:
+        tid = (last_doc or {}).get("active_target_id") if isinstance(last_doc, dict) else None
+        if not last_list.get("ok"):
+            reasons.append(
+                "cdp /json/list not ready ("
+                f"{last_list.get('error') or last_list.get('status') or 'unknown'})"
+            )
+        elif not cdp_list_has_target(last_list, tid if isinstance(tid, str) else None):
+            sample = last_list.get("ids") or []
+            sample_s = ",".join(str(x) for x in sample[:5]) if isinstance(sample, list) else ""
+            reasons.append(
+                f"active_target_id {tid!r} missing from cdp /json/list "
+                f"(stale target state?; list_count={last_list.get('count')}"
+                + (f", sample=[{sample_s}]" if sample_s else "")
+                + ")"
+            )
+
+    raise AdapterError(
+        "watch readiness timed out: "
+        + ("; ".join(reasons) if reasons else "target/CDP never settled"),
+        timeout_s=float(timeout_s),
+        attempts=attempts,
+        elapsed_s=round(time.monotonic() - started, 3),
+        cdp_url=str(cdp_url).rstrip("/"),
+        cdp=last_cdp,
+        cdp_list={
+            "ok": bool(last_list.get("ok")),
+            "error": last_list.get("error"),
+            "status": last_list.get("status"),
+            "count": last_list.get("count"),
+            "ids_sample": (last_list.get("ids") or [])[:8]
+            if isinstance(last_list.get("ids"), list)
+            else [],
+        },
+        target_state_path=str(target_path),
+        target_state={
+            "present": last_doc is not None,
+            "active_target_id": (last_doc or {}).get("active_target_id"),
+            "seq": (last_doc or {}).get("seq"),
+            "cdp_url": (last_doc or {}).get("cdp_url"),
+            "worker_id": (last_doc or {}).get("worker_id"),
+            "page_url": ((last_doc or {}).get("page") or {}).get("url")
+            if isinstance((last_doc or {}).get("page"), dict)
+            else None,
+        },
+        reasons=reasons,
+        hint=(
+            "ensure the lease adapter started the daemon and it published "
+            "state/<worker>/control/active-target.json with a non-null "
+            "active_target_id that still exists in CDP /json/list; "
+            "do not seed a null stub"
+        ),
+    )
 
 
 def start_watch(
@@ -458,11 +937,17 @@ def start_watch(
     direction: str = "right",
     herdr_session: str | None = None,
     herdr_socket: str | None = None,
+    ready_timeout_s: float = DEFAULT_READY_TIMEOUT_S,
+    ready_poll_s: float = DEFAULT_READY_POLL_S,
 ) -> dict[str, Any]:
     """
     Split the navigator's existing pane and run observe_mirror viewer.
 
-    Binds watch pane ids + herdr endpoint onto the returned watch record.
+    Waits for CDP + non-null active_target_id present in /json/list before
+    splitting. Sets HERDR_BROWSER_VIEWER_WATCH_RESIZE=1 on the mirror pane.
+    Verifies the viewer process started; closes the new pane on failure.
+    Never seeds a null target stub. Binds watch pane ids + herdr endpoint onto
+    the returned watch record.
     """
     resources = lease.get("resources") or {}
     worker_id = lease.get("worker_id")
@@ -482,17 +967,19 @@ def start_watch(
     target_path = resources.get("target_state_path") or str(
         active_target_path(state_root, worker_id)
     )
+    # Ensure parent exists for the daemon publisher, but do NOT write a null
+    # active_target_id stub — that freezes observe_mirror on about:blank.
     Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-    if not Path(target_path).exists():
-        from daemon.target_state import publish_active_target
 
-        publish_active_target(
-            target_path,
-            worker_id=str(worker_id),
-            active_target_id=None,
-            cdp_url=cdp_url,
-            seq=1,
-        )
+    readiness = wait_for_watch_readiness(
+        cdp_url=str(cdp_url),
+        target_state_path=target_path,
+        timeout_s=ready_timeout_s,
+        poll_s=ready_poll_s,
+        require_target_id=True,
+    )
+
+    ratio = normalize_ratio(ratio)
 
     agent = resolve_agent_pane(agent_pane, endpoint=endpoint)
     viewer_cwd = resolve_viewer_cwd(require_capable=True)
@@ -524,7 +1011,23 @@ def start_watch(
     )
     cmd = viewer_command(viewer_cwd)
     time.sleep(0.15)
-    run_in_pane(watch_pane, cmd, endpoint=endpoint)
+    try:
+        run_in_pane(watch_pane, cmd, endpoint=endpoint)
+        viewer_start = wait_for_viewer_process(
+            watch_pane,
+            endpoint=endpoint,
+            timeout_s=DEFAULT_VIEWER_START_TIMEOUT_S,
+            poll_s=DEFAULT_VIEWER_START_POLL_S,
+        )
+    except AdapterError as e:
+        # Roll back the newly split pane so failures do not leave orphans.
+        close_pane(watch_pane, endpoint=endpoint)
+        raise AdapterError(
+            f"watch pane started then failed: {e.message}",
+            watch_pane_id=watch_pane,
+            closed_on_failure=True,
+            **(e.details or {}),
+        ) from e
 
     return {
         "agent_pane_id": agent,
@@ -538,9 +1041,23 @@ def start_watch(
             "root": str(viewer_cwd),
             "has_observe_mirror": True,
         },
+        "viewer_start": {
+            "ok": True,
+            "elapsed_s": viewer_start.get("elapsed_s"),
+            "attempts": viewer_start.get("attempts"),
+            "matched": (viewer_start.get("process") or {}).get("matched"),
+            "pids": (viewer_start.get("process") or {}).get("pids"),
+        },
         "env": mirror_env,
         "target_state_path": target_path,
         "cdp_url": cdp_url,
+        "readiness": {
+            "ok": True,
+            "elapsed_s": readiness.get("elapsed_s"),
+            "attempts": readiness.get("attempts"),
+            "active_target_id": readiness.get("active_target_id"),
+            "cdp_list": readiness.get("cdp_list"),
+        },
         "herdr_socket": endpoint.get("herdr_socket"),
         "herdr_session": endpoint.get("herdr_session"),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

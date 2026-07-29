@@ -99,14 +99,26 @@ Exact name lookup (`profiles show`); no site/account guessing on launch:
 ./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
 ./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json
 out=$(./bin/browserctl launch --profile coal-demo --owner orch --json)
-# lease.profile_name + env.BROWSERCTL_PROFILE_NAME
+# lease.profile_name + env.BROWSERCTL_PROFILE_NAME=coal-demo
 ./bin/browserctl release --lease "$(jq -r .lease.lease_id <<<"$out")" --json
 ```
 
 `--profile` **or** `--kind` required. `--profile` is exclusive with selector flags
 (`--kind/--email/--worker/--label/--cdp-port/--country/--city/--headed/--no-start/--attach-only`);
-runtime flags (`--owner/--mode/--ttl/--watch`) stay allowed. Manager enforces the same
+runtime flags (`--owner/--mode/--ttl/--watch/--ratio/--ready-timeout`) stay allowed. Manager enforces the same
 exclusion and derives `headless` from profile `headed`.
+
+#### Association learning (after successful login)
+
+Registry associations are **operator/agent explicit** — not scraped from the live tab:
+
+```bash
+# only after a real successful login proved the binding
+./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json
+./bin/browserctl profiles associate lab-scratch example.com --json   # accountless site
+```
+
+Strict selector exclusion on resolve: account filter is exact; accountless resolve never returns account-scoped rows; multi-match → `PROFILE_AMBIGUOUS`.
 
 ---
 
@@ -119,13 +131,73 @@ exclusion and derives `headless` from profile `headed`.
 5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` / TTL `reap`.
 6. **xAI conflict never kills the winner browser.**
 7. **Scratch CDP ports** under global `ports.lock` with retry.
-8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed).
+8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1`; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 25% / browser 75%.
 9. **Profile resolve** is deterministic; refuse ambiguity; emit-only (no acquire).
-10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `profile_name` + `BROWSERCTL_PROFILE_NAME`.
+10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `lease.profile_name` + `env.BROWSERCTL_PROFILE_NAME`.
+11. **Association learning** is explicit: after a successful login to a new site/account, run `profiles associate <name> <site> [account]` — never invent associations from URL heuristics.
+12. **Release/unwatch** clean up watch panes; orchestrator owns `finally`.
 
 ---
 
 ## Watch / observe_mirror
+
+### Cold-start readiness (fail closed)
+
+`watch` **waits** until all settle, then splits the pane:
+
+1. CDP `http://127.0.0.1:<port>/json/version` returns 200
+2. `state/<worker>/control/active-target.json` has a **non-null** `active_target_id` (daemon publish)
+3. That id exists in CDP `/json/list` (rejects stale published state)
+
+It does **not** seed a null `active_target_id` stub. A null id is the harness cleared/cold state; opening observe_mirror on it freezes a permanent detached/`about:blank` mirror.
+
+| Flag / knobs | Default |
+|---|---|
+| `--ready-timeout SEC` | `20` |
+| poll interval | `0.25s` (internal) |
+
+Timeout → `ADAPTER_ERROR` with bounded diagnostics (`cdp`, `cdp_list`, `target_state` summary, `reasons`, `hint`). No secrets in the payload.
+
+### Viewer env + process verify
+
+Watch pane env always includes:
+
+| Var | Value | Why |
+|---|---|---|
+| `HERDR_BROWSER_MODE` | `observe_mirror` | mirror contract |
+| `HERDR_BROWSER_TARGET_STATE` | active-target path | follow harness publish |
+| `HERDR_BROWSER_CDP_URL` | lease CDP | attach |
+| `HERDR_BROWSER_VIEWER_WATCH_RESIZE` | `1` | enter live resize/graphics-stream loop (`shouldWatchResize`); without it daemon metrics stay `graphics_stream.active=false` / `frames=0` |
+
+After `pane run`, watch polls herdr `pane process-info` (bounded ~3s) for `viewer.ts` / herdr-browser markers. Failure → close the newly split pane and raise `ADAPTER_ERROR` (`closed_on_failure=true`).
+
+### Split ratio (herdr first-child fraction)
+
+herdr `pane split --direction right --ratio R` keeps the **agent pane as first child (left)** and creates the watch pane as second (right). `R` is the first-child fraction, clamped to `[0.1, 0.9]`.
+
+| | |
+|---|---|
+| **Default** | `0.25` → agent **25%** left / browser **75%** right |
+| **Override** | `--ratio 0.4` (or any `(0,1)`) on `watch` / `launch --watch` |
+
+```bash
+./bin/browserctl watch --lease "$LEASE" --agent-pane "$HERDR_PANE_ID" \
+  --herdr-socket "$HERDR_SOCKET_PATH" --json
+# default ratio 0.25
+
+./bin/browserctl watch --lease "$LEASE" --ratio 0.4 --ready-timeout 30 --json
+```
+
+### Cleanup
+
+| Action | Effect |
+|---|---|
+| `unwatch --lease ID` | close watch pane; clear `lease.watch`; **keep** mutation lease |
+| `unwatch --keep-pane` | unbind only; leave pane open |
+| `release --lease ID` | stop adapter + **close watch pane** (unless `--keep-watch`) |
+| `reap` | same release path for expired / force ids |
+
+Orchestrator owns cleanup: always `unwatch` or `release` in `finally`. Do not leave orphan observe_mirror panes.
 
 ### herdr endpoint (required — fail closed)
 
@@ -160,10 +232,11 @@ echo '/path/to/observe_mirror-capable/herdr-browser' > state/control/viewer-root
 Pre-merge worktrees OK if capability probe passes (`observe_mirror` + target-state markers). Fail closed otherwise. Do not hardcode operator home paths in-repo.
 
 ```bash
-herdr pane split <agent-pane> --direction right --ratio 0.42 …
+herdr pane split <agent-pane> --direction right --ratio 0.25 …
 # HERDR_BROWSER_MODE=observe_mirror
 # HERDR_BROWSER_TARGET_STATE=…/active-target.json
 # HERDR_BROWSER_CDP_URL=http://127.0.0.1:<port>
+# HERDR_BROWSER_VIEWER_WATCH_RESIZE=1
 ```
 
 ---
@@ -193,12 +266,22 @@ Daemon publishes on connect / navigation / tab switch. Seq increments locked (mo
 
 ---
 
-## Persistent vs one-shot
+## Persistent vs one-shot + scratch profile policy
 
 | mode | TTL default | Who releases |
 |---|---|---|
 | `persistent` | 1h | orchestrator `release` |
 | `one_shot` | 15m | same, shorter TTL |
+
+### Scratch: stable named vs ephemeral one-shot
+
+| Intent | How |
+|---|---|
+| **Ephemeral demo** | `launch --kind scratch --label demo --mode one_shot` — unique `scratch-<label>-<token>` worker + profile dir; release tears down daemon/chrome |
+| **Stable scratch profile** | `profiles register lab-scratch --kind scratch --label lab` then `launch --profile lab-scratch` — same **selector** every time; each acquire still gets a fresh worker token unless you pass a fixed `--worker` via profile launch fields |
+| **Never** | `profiles resolve` must not auto-create scratch browsers or profile dirs |
+
+Port allocator: scratch CDP ports (9300–9399) go through global `state/control/ports.lock` + `ports.json` reservations with retry on bind collision. Parallel acquires cannot steal the same port.
 
 ```bash
 ./bin/browserctl mark-exit --lease "$LEASE" --json

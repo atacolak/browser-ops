@@ -61,9 +61,11 @@ python3 identity_ops.py stage-get --email 'USER@host' --json
 - **active ∩ retired = ∅**. `ensure` on a retired email needs `--revive`.
 - Admin credentials: **`CPA_ADMIN_KEY` env only** — commands/skills fail closed if absent where needed.
 
-### Watch viewer root
+### Watch / observe_mirror
 
-`browserctl watch` resolves an observe_mirror-capable herdr-browser tree (fail closed):
+`browserctl watch` waits for CDP + non-null `active_target_id` present in `/json/list` (no null stub / permanent `about:blank`), sets `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1` for the live graphics-stream loop, verifies the viewer process started (closes the new pane on failure), then keeps the split. Default ratio **agent 25% / browser 75%** (`--ratio` overrides). `release`/`unwatch` clean up the pane.
+
+Viewer root (fail closed), first capable match:
 
 1. `HERDR_BROWSER_ROOT`
 2. `BROWSERCTL_VIEWER_ROOT`
@@ -74,6 +76,12 @@ python3 identity_ops.py stage-get --email 'USER@host' --json
 mkdir -p state/control
 echo '/path/to/observe_mirror-capable/herdr-browser' > state/control/viewer-root
 ```
+
+Full contract: [`docs/browserctl.md`](./docs/browserctl.md) · agent law: [`AGENTS.md`](./AGENTS.md).
+
+### Quarantine (local-only)
+
+Legacy unverified domain skills sit on local branch `quarantine/legacy-browser-skills` only — not main, not default agent memory. See AGENTS.md.
 
 ---
 
@@ -97,7 +105,10 @@ python3 -m pytest tests/ -q
 
 - Navigator is the only browser actor; orchestrator owns browserctl lifecycle
 - One identity/profile/worker/port; no leased `default`
-- ensure → spawn env → hard verify → stop/release
+- ensure → spawn env → hard verify → stop/release (and unwatch)
+- Named profiles: register / associate / resolve / `launch --profile` (strict selectors; stamp `BROWSERCTL_PROFILE_NAME`)
+- Associate only after proven login; resolve never auto-creates scratch
+- Watch waits for daemon target publish + `/json/list` match; `VIEWER_WATCH_RESIZE=1`; default split 25/75
 - No secrets in git, leases, or `PROFILES.json`
 - S4 is **action_required** (not automatic teardown)
 - CDP localhost only

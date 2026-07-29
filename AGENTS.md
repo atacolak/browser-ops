@@ -51,9 +51,13 @@ browserctl launch|acquire  →  spawn navigator with returned env  →  release 
 ```bash
 out=$(./bin/browserctl launch --kind scratch --label demo --owner orch --json)
 out=$(./bin/browserctl launch --kind xai --email 'USER@host' --owner orch --json)
+out=$(./bin/browserctl launch --profile coal-demo --owner orch --json)  # named
 lease=$(jq -r .lease.lease_id <<<"$out")
 # spawn navigator: cwd=browser-ops, env=out.env
-./bin/browserctl release --lease "$lease" --json
+# optional mirror (waits CDP + non-null active_target_id; default agent 25% / browser 75%):
+# ./bin/browserctl watch --lease "$lease" --agent-pane "$HERDR_PANE_ID" \
+#   --herdr-socket "$HERDR_SOCKET_PATH" --json
+./bin/browserctl release --lease "$lease" --json   # also closes watch pane unless --keep-watch
 ```
 
 | Kind | Adapter | Notes |
@@ -68,9 +72,37 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 ./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
 ./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json
 ./bin/browserctl profiles resolve x.ai --account 'USER@host' --json
+./bin/browserctl launch --profile coal-demo --owner orch --json
+# → lease.profile_name + env.BROWSERCTL_PROFILE_NAME
 ```
 
 **Resolve** is exact/deterministic (never fuzzy). Scratch stays explicit; resolve emits selectors only.
+
+| Rule | Detail |
+|---|---|
+| Strict selectors | `--profile` **excludes** `--kind/--email/--worker/--label/--cdp-port/--country/--city/--headed/--no-start/--attach-only` |
+| Stamp | successful `--profile` launch writes `lease.profile_name` + `BROWSERCTL_PROFILE_NAME` |
+| Association learning | **explicit only** after a proven successful login: `profiles associate <name> <site> [account]` — never infer from the live URL |
+| Accountless resolve | without `--account`, only accountless rows match; account-scoped-only site → `PROFILE_NOT_FOUND` (+ hint) |
+| Ambiguity | multi-match → `PROFILE_AMBIGUOUS`; lock timeout → `PROFILE_LOCK_TIMEOUT` |
+
+### Scratch: stable vs ephemeral
+
+| Policy | Use |
+|---|---|
+| Ephemeral one-shot | `launch --kind scratch --label demo --mode one_shot` — unique worker token; release kills daemon/chrome |
+| Stable named selector | `profiles register lab-scratch --kind scratch --label lab` + `launch --profile lab-scratch` |
+| Ports | scratch CDP 9300–9399 under global `ports.lock` + reservation retry (collision-safe) |
+
+### Watch laws
+
+1. Wait for CDP `/json/version`, non-null `active_target_id`, **and** that id in CDP `/json/list` before splitting (bounded; default 20s).
+2. **Never** seed a null active-target stub (that freezes observe_mirror on `about:blank`).
+3. Watch pane env must set `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1` (live resize/graphics-stream loop).
+4. After pane run, verify viewer process started; on failure close the newly split pane.
+5. Default split ratio **0.25** (herdr first-child = agent left 25%, browser right 75%). `--ratio` overrides.
+6. Exact herdr endpoint (`--herdr-socket` / `HERDR_SOCKET_PATH`) required — fail closed if ambiguous.
+7. Cleanup: `unwatch` closes the mirror pane; `release` closes it too unless `--keep-watch`.
 
 ### Lease laws
 
@@ -149,11 +181,23 @@ On learn: prove once → `browser_skill op:write` with frontmatter (`id`, `domai
 - Payment/SEPA experiments, containment notes, live profiles, findings
 - Healing scripts with embedded admin keys
 
+### Quarantine branch (local-only)
+
+Unverified / legacy domain procedures (amazon, facebook, github scraping drafts, etc.) live on the **local** branch `quarantine/legacy-browser-skills` and optional worktree — **not** on `main`, **not** shipped, **not** agent-default memory.
+
+- Do **not** treat quarantine skills as operator truth.
+- Do **not** merge quarantine into main without revalidation.
+- Edits to quarantine content require a **separate commit on the quarantine branch** (this clean tree does not modify that worktree).
+- Revalidation path: prove once against a live lease → rewrite under `skills/domains/<site>/` on main with proper frontmatter.
+
 ---
 
 ## Hard rules
 
 - Do not commit secrets; no secrets in lease/target/PROFILES JSON
 - Do not use `default` worker for coal
-- Always `release` leases; always close agent-opened tabs
+- Always `release` leases; always close agent-opened tabs; clean up watch panes
 - CDP on localhost only
+- Do not open `browserctl watch` before daemon target publish settles; do not seed null targets
+- Do not auto-associate profiles from URLs — associate explicitly after proven login
+- Do not load skills from the quarantine branch as production procedures

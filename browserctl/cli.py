@@ -121,6 +121,7 @@ def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = Fa
         req["watch"] = bool(getattr(args, "watch", False))
         req["agent_pane"] = getattr(args, "agent_pane", None)
         req["ratio"] = getattr(args, "ratio", None)
+        req["ready_timeout"] = getattr(args, "ready_timeout", None)
         req["herdr_session"] = getattr(args, "herdr_session", None)
         req["herdr_socket"] = getattr(args, "herdr_socket", None)
     return req
@@ -167,6 +168,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         direction=args.direction,
         herdr_session=args.herdr_session,
         herdr_socket=args.herdr_socket,
+        ready_timeout_s=getattr(args, "ready_timeout", None),
     )
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
@@ -392,7 +394,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="exact herdr socket path (or HERDR_SOCKET_PATH); fail closed if missing",
     )
-    w.add_argument("--ratio", type=float, default=0.42)
+    w.add_argument(
+        "--ratio",
+        type=float,
+        default=None,
+        help=(
+            "herdr first-child fraction (direction=right → agent left). "
+            "Default 0.25 (agent 25%% / browser 75%%)."
+        ),
+    )
+    w.add_argument(
+        "--ready-timeout",
+        type=float,
+        default=None,
+        help="seconds to wait for CDP + non-null active_target_id (default 20)",
+    )
     w.add_argument(
         "--direction",
         default="right",
@@ -449,7 +465,21 @@ def build_parser() -> argparse.ArgumentParser:
         lp.add_argument("--agent-pane")
         lp.add_argument("--herdr-session", default=None)
         lp.add_argument("--herdr-socket", default=None)
-        lp.add_argument("--ratio", type=float, default=0.42)
+        lp.add_argument(
+            "--ratio",
+            type=float,
+            default=None,
+            help=(
+                "with --watch: herdr first-child fraction "
+                "(default 0.25 → agent 25%% / browser 75%%)"
+            ),
+        )
+        lp.add_argument(
+            "--ready-timeout",
+            type=float,
+            default=None,
+            help="with --watch: readiness wait seconds (default 20)",
+        )
         lp.set_defaults(func=cmd_launch)
 
     # profiles <subcommand>

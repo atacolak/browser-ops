@@ -386,10 +386,11 @@ class Manager:
         lease_id: str | None = None,
         worker_id: str | None = None,
         agent_pane: str | None = None,
-        ratio: float = watch_mod.DEFAULT_RATIO,
+        ratio: float | None = None,
         direction: str = "right",
         herdr_session: str | None = None,
         herdr_socket: str | None = None,
+        ready_timeout_s: float | None = None,
     ) -> dict[str, Any]:
         if lease_id:
             lease = require_lease(self.state_root, lease_id)
@@ -415,14 +416,19 @@ class Manager:
                 "lease_id": lease["lease_id"],
             }
 
+        ready_kwargs: dict[str, Any] = {}
+        if ready_timeout_s is not None:
+            ready_kwargs["ready_timeout_s"] = float(ready_timeout_s)
+
         watch_rec = watch_mod.start_watch(
             lease,
             state_root=self.state_root,
             agent_pane=agent_pane,
-            ratio=ratio,
+            ratio=watch_mod.normalize_ratio(ratio),
             direction=direction,
             herdr_session=herdr_session,
             herdr_socket=herdr_socket,
+            **ready_kwargs,
         )
         lease = touch_lease(lease)
         lease["watch"] = watch_rec
@@ -585,12 +591,18 @@ class Manager:
         result = self.acquire(request)
         if request.get("watch"):
             try:
+                ready_timeout = request.get("ready_timeout")
+                if ready_timeout is None:
+                    ready_timeout = request.get("ready_timeout_s")
                 w = self.watch(
                     lease_id=result["lease"]["lease_id"],
                     agent_pane=request.get("agent_pane"),
-                    ratio=float(request.get("ratio") or watch_mod.DEFAULT_RATIO),
+                    ratio=request.get("ratio"),
                     herdr_session=request.get("herdr_session"),
                     herdr_socket=request.get("herdr_socket"),
+                    ready_timeout_s=(
+                        float(ready_timeout) if ready_timeout is not None else None
+                    ),
                 )
                 result["watch"] = w.get("watch")
                 result["mirror_env"] = w.get("mirror_env")
