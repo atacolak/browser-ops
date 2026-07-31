@@ -29,7 +29,7 @@ Cookies **are** the person. Do not share browsers across accounts.
 
 ./bin/browserctl launch --kind scratch --label demo --json
 ./bin/browserctl watch --lease <id> --agent-pane <nav-pane> --json
-# waits CDP + non-null active_target_id; default agent 25% / browser 75%
+# waits CDP + non-null active_target_id; default agent 37% / browser 63%
 
 # named registry
 ./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json

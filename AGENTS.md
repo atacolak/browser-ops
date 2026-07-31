@@ -54,7 +54,7 @@ out=$(./bin/browserctl launch --kind xai --email 'USER@host' --owner orch --json
 out=$(./bin/browserctl launch --profile coal-demo --owner orch --json)  # named
 lease=$(jq -r .lease.lease_id <<<"$out")
 # spawn navigator: cwd=browser-ops, env=out.env
-# optional mirror (waits CDP + non-null active_target_id; default agent 25% / browser 75%):
+# optional mirror (waits CDP + non-null active_target_id; default agent 37% / browser 63%):
 # ./bin/browserctl watch --lease "$lease" --agent-pane "$HERDR_PANE_ID" \
 #   --herdr-socket "$HERDR_SOCKET_PATH" --json
 ./bin/browserctl release --lease "$lease" --json   # also closes watch pane unless --keep-watch
@@ -98,9 +98,9 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 
 1. Wait for CDP `/json/version`, non-null `active_target_id`, **and** that id in CDP `/json/list` before splitting (bounded; default 20s).
 2. **Never** seed a null active-target stub (that freezes observe_mirror on `about:blank`).
-3. Watch pane env must set `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1` (live resize/graphics-stream loop).
+3. Watch pane env must set bounded 1:1 screencast, `HERDR_BROWSER_FOLLOW_PANE_VIEWPORT=1`, and `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1`; input remains read-only while the page reflows to pane size.
 4. After pane run, verify viewer process started; on failure close the newly split pane.
-5. Default split ratio **0.25** (herdr first-child = agent left 25%, browser right 75%). `--ratio` overrides.
+5. Default split ratio **0.37** (herdr first-child = agent left 37%, browser right 63%). `--ratio` overrides.
 6. Exact herdr endpoint (`--herdr-socket` / `HERDR_SOCKET_PATH`) required — fail closed if ambiguous.
 7. Cleanup: `unwatch` closes the mirror pane; `release` closes it too unless `--keep-watch`.
 

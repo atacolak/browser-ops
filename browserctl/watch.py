@@ -34,8 +34,8 @@ Herd session targeting (fail closed if ambiguous):
 
 Split ratio (herdr pane split --ratio):
   ratio = first-child fraction. Direction right keeps the agent pane as first
-  child (left) and the new watch pane as second (right). Default 0.25 → agent
-  25% / browser 75%. Explicit --ratio always wins.
+  child (left) and the new watch pane as second (right). Default 0.37 → agent
+  37% / browser 63%. Explicit --ratio always wins.
 """
 
 from __future__ import annotations

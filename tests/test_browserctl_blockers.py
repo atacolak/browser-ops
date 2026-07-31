@@ -433,7 +433,7 @@ def test_watch_persists_herdr_endpoint(tmp_path: Path, monkeypatch):
 # ── 5. watch readiness (cold-start race) ─────────────────────────────────────
 
 
-def test_default_ratio_is_agent_25_browser_75():
+def test_default_ratio_is_agent_37_browser_63():
     assert watch_mod.DEFAULT_RATIO == 0.37
     assert watch_mod.normalize_ratio(None) == 0.37
     assert watch_mod.normalize_ratio(0.25) == 0.25
