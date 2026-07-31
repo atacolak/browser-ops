@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "herdr first-child fraction (direction=right → agent left). "
-            "Default 0.25 (agent 25%% / browser 75%%)."
+            "Default 0.37 (agent 37%% / browser 63%%)."
         ),
     )
     w.add_argument(
@@ -471,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help=(
                 "with --watch: herdr first-child fraction "
-                "(default 0.25 → agent 25%% / browser 75%%)"
+                "(default 0.37 → agent 37%% / browser 63%%)"
             ),
         )
         lp.add_argument(

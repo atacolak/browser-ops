@@ -60,7 +60,9 @@ from browserctl.paths import (
 )
 
 # herdr: ratio is first-child fraction. direction=right → agent left, watch right.
-DEFAULT_RATIO = 0.25
+# 0.37 keeps the paired browser near 1150px on a 191-column terminal while
+# leaving enough transcript width for useful navigator observation.
+DEFAULT_RATIO = 0.37
 VIEWER_ROOT_FILENAME = "viewer-root"
 
 # Bounded cold-start wait before failing watch with diagnostics.
@@ -619,6 +621,8 @@ def build_mirror_env(
         # external browser's larger viewport and Herdr clips them on small panes.
         "HERDR_BROWSER_CAPTURE_BACKEND": "screencast",
         "HERDR_BROWSER_CAPTURE_SCALE": "1",
+        # Read-only input remains enforced; only page layout follows pane size.
+        "HERDR_BROWSER_FOLLOW_PANE_VIEWPORT": "1",
         # Required for live resize + graphics stream loop in herdr-browser
         # viewer (shouldWatchResize). Without this, daemon metrics stay
         # graphics_stream.active=false / frames=0 after a one-shot render.

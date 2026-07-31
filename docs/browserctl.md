@@ -151,7 +151,7 @@ Strict selector exclusion on resolve: account filter is exact; accountless resol
 5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` / TTL `reap`.
 6. **xAI conflict never kills the winner browser.**
 7. **Scratch CDP ports** under global `ports.lock` with retry.
-8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1`; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 25% / browser 75%.
+8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets live resize, bounded 1:1 screencast, and read-only pane-follow viewport reflow; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 37% / browser 63%.
 9. **Profile resolve** is deterministic; refuse ambiguity; emit-only (no acquire).
 10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `lease.profile_name` + `env.BROWSERCTL_PROFILE_NAME`.
 11. **Association learning** is explicit: after a successful login to a new site/account, run `profiles associate <name> <site> [account]` — never invent associations from URL heuristics.
@@ -188,6 +188,9 @@ Watch pane env always includes:
 | `HERDR_BROWSER_MODE` | `observe_mirror` | mirror contract |
 | `HERDR_BROWSER_TARGET_STATE` | active-target path | follow harness publish |
 | `HERDR_BROWSER_CDP_URL` | lease CDP | attach |
+| `HERDR_BROWSER_CAPTURE_BACKEND` | `screencast` | bound frames to pane pixels instead of clipping oversized screenshots |
+| `HERDR_BROWSER_CAPTURE_SCALE` | `1` | preserve 1:1 sharpness at the pane raster |
+| `HERDR_BROWSER_FOLLOW_PANE_VIEWPORT` | `1` | reflow page layout to the pane while input remains read-only |
 | `HERDR_BROWSER_VIEWER_WATCH_RESIZE` | `1` | enter live resize/graphics-stream loop (`shouldWatchResize`); without it daemon metrics stay `graphics_stream.active=false` / `frames=0` |
 
 After `pane run`, watch polls herdr `pane process-info` (bounded ~3s) for `viewer.ts` / herdr-browser markers. Failure → close the newly split pane and raise `ADAPTER_ERROR` (`closed_on_failure=true`).
@@ -198,13 +201,13 @@ herdr `pane split --direction right --ratio R` keeps the **agent pane as first c
 
 | | |
 |---|---|
-| **Default** | `0.25` → agent **25%** left / browser **75%** right |
+| **Default** | `0.37` → agent **37%** left / browser **63%** right |
 | **Override** | `--ratio 0.4` (or any `(0,1)`) on `watch` / `launch --watch` |
 
 ```bash
 ./bin/browserctl watch --lease "$LEASE" --agent-pane "$HERDR_PANE_ID" \
   --herdr-socket "$HERDR_SOCKET_PATH" --json
-# default ratio 0.25
+# default ratio 0.37
 
 ./bin/browserctl watch --lease "$LEASE" --ratio 0.4 --ready-timeout 30 --json
 ```
@@ -253,7 +256,7 @@ echo '/path/to/observe_mirror-capable/herdr-browser' > state/control/viewer-root
 Pre-merge worktrees OK if capability probe passes (`observe_mirror` + target-state markers). Fail closed otherwise. Do not hardcode operator home paths in-repo.
 
 ```bash
-herdr pane split <agent-pane> --direction right --ratio 0.25 …
+herdr pane split <agent-pane> --direction right --ratio 0.37 …
 # HERDR_BROWSER_MODE=observe_mirror
 # HERDR_BROWSER_TARGET_STATE=…/active-target.json
 # HERDR_BROWSER_CDP_URL=http://127.0.0.1:<port>

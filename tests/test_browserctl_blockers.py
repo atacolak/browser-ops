@@ -434,8 +434,8 @@ def test_watch_persists_herdr_endpoint(tmp_path: Path, monkeypatch):
 
 
 def test_default_ratio_is_agent_25_browser_75():
-    assert watch_mod.DEFAULT_RATIO == 0.25
-    assert watch_mod.normalize_ratio(None) == 0.25
+    assert watch_mod.DEFAULT_RATIO == 0.37
+    assert watch_mod.normalize_ratio(None) == 0.37
     assert watch_mod.normalize_ratio(0.25) == 0.25
     assert watch_mod.normalize_ratio(0.5) == 0.5
     # herdr clamps to [0.1, 0.9]
@@ -737,9 +737,9 @@ def test_start_watch_waits_then_splits(tmp_path: Path, monkeypatch):
         # default ratio
     )
     assert rec["watch_pane_id"] == "w1:watch"
-    assert rec["ratio"] == 0.25
+    assert rec["ratio"] == 0.37
     assert rec["readiness"]["active_target_id"] == "TAB-9"
-    assert split_calls and split_calls[0]["ratio"] == 0.25
+    assert split_calls and split_calls[0]["ratio"] == 0.37
     assert rec["env"]["HERDR_BROWSER_MODE"] == "observe_mirror"
     assert rec["env"]["HERDR_BROWSER_CDP_URL"] == cdp_url
     assert rec["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
@@ -769,6 +769,7 @@ def test_build_mirror_env_sets_watch_resize(tmp_path: Path):
     assert env["HERDR_BROWSER_MODE"] == "observe_mirror"
     assert env["HERDR_BROWSER_CAPTURE_BACKEND"] == "screencast"
     assert env["HERDR_BROWSER_CAPTURE_SCALE"] == "1"
+    assert env["HERDR_BROWSER_FOLLOW_PANE_VIEWPORT"] == "1"
     assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
     assert env["HERDR_BROWSER_CDP_URL"] == "http://127.0.0.1:9333"
     assert env["HERDR_BROWSER_TARGET_STATE"] == str(tmp_path / "active-target.json")
