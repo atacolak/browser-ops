@@ -767,6 +767,8 @@ def test_build_mirror_env_sets_watch_resize(tmp_path: Path):
         viewer_root=tmp_path / "viewer",
     )
     assert env["HERDR_BROWSER_MODE"] == "observe_mirror"
+    assert env["HERDR_BROWSER_CAPTURE_BACKEND"] == "screencast"
+    assert env["HERDR_BROWSER_CAPTURE_SCALE"] == "1"
     assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
     assert env["HERDR_BROWSER_CDP_URL"] == "http://127.0.0.1:9333"
     assert env["HERDR_BROWSER_TARGET_STATE"] == str(tmp_path / "active-target.json")

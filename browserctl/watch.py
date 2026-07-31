@@ -615,6 +615,10 @@ def build_mirror_env(
         "HERDR_BROWSER_MODE": "observe_mirror",
         "HERDR_BROWSER_TARGET_STATE": str(target_state_path),
         "HERDR_BROWSER_CDP_URL": str(cdp_url).rstrip("/"),
+        # Bound frames to the pane raster. Unbounded screenshots preserve the
+        # external browser's larger viewport and Herdr clips them on small panes.
+        "HERDR_BROWSER_CAPTURE_BACKEND": "screencast",
+        "HERDR_BROWSER_CAPTURE_SCALE": "1",
         # Required for live resize + graphics stream loop in herdr-browser
         # viewer (shouldWatchResize). Without this, daemon metrics stay
         # graphics_stream.active=false / frames=0 after a one-shot render.
