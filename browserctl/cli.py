@@ -424,40 +424,6 @@ def _add_profile_flag(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_viewport_flags(
-    p: argparse.ArgumentParser,
-    *,
-    with_watch_prefix: bool = False,
-) -> None:
-    """Pass-through --viewport flags for watch / launch --watch / navigator spawn.
-
-    Normalization lives in browserctl.watch (viewport worker / main 844025a).
-    This only collects CLI values onto the request dict.
-    """
-    prefix = "with --watch: " if with_watch_prefix else ""
-    p.add_argument(
-        "--viewport",
-        default=None,
-        choices=["fixed", "follow-pane", "preserve"],
-        help=(
-            f"{prefix}observe_mirror viewport mode "
-            "(fixed|follow-pane|preserve); policy applied by watch layer"
-        ),
-    )
-    p.add_argument(
-        "--viewport-width",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed viewport width override (watch layer)",
-    )
-    p.add_argument(
-        "--viewport-height",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed viewport height override (watch layer)",
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     shared = _global_parent()
     p = argparse.ArgumentParser(
