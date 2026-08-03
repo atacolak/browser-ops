@@ -42,7 +42,7 @@ cloak/chrome is the browser substrate. daemon is the harness + target publisher.
 ## ownership law (load-bearing)
 | actor | owns | must not |
 |---|---|---|
-| orchestrator / human | `browserctl launch/acquire/watch/release`, profile resolve, identity retire/stage decisions | driving pages; raw port grabs for coal |
+| orchestrator / human | `browserctl navigator spawn/cleanup`, profile resolve, identity retire/stage decisions | driving pages; hand-joining env/watch/release; raw port grabs for coal |
 | navigator | page ops with ALREADY-ACQUIRED env; domain skills | allocating cdp/ports/profiles; lease lifecycle |
 | demiurge | code/config in browser-ops | browser mutation |
 | identity_ops | canonical xai bind map + stage ledger + ensure/stop/retire | being bypassed for coal starts |
@@ -50,16 +50,13 @@ cloak/chrome is the browser substrate. daemon is the harness + target publisher.
 
 if this split flips, fleets collide on cookies/ports and mirrors freeze.
 
-## the miracle loop (happy path)
+## the orchestrator loop (happy path)
 1. decide selector: `--profile NAME` OR `--kind scratch|xai|vpn …`
-2. `out=$(./bin/browserctl launch … --owner <orch> --json)`
-3. read `lease_id` + `env` from out
-4. spawn navigator in cwd=`browser-ops` WITH that env (and only that env contract)
-5. optional: `./bin/browserctl watch --lease $lease --agent-pane $NAV_PANE --herdr-socket $HERDR_SOCKET_PATH --json`
-6. navigator works; daemon updates `state/<worker>/control/active-target.json`; mirror follows target
-7. ALWAYS `./bin/browserctl release --lease $lease --json` in finally (closes watch unless `--keep-watch`)
+2. `out=$(./bin/browserctl navigator spawn … --owner <orch> --mode one_shot --watch --json)`
+3. dispatch work to `.next.run_target`
+4. `./bin/browserctl navigator cleanup --lease "$lease" --json` in `finally`
 
-navigator does not pick ports. orchestrator picks profile/lease, then binds navigator.
+spawn owns lease acquisition, exact env injection, dedicated tab, navigator pane, and optional watch. cleanup owns navigator/watch/tab settlement, browser release, binding removal, and wipe policy. navigator does not pick ports; orchestrator does not transpose env or memorize low-level cleanup law.
 
 ## env contract (what navigator actually receives)
 typical keys from launch:
@@ -117,7 +114,7 @@ ssh: works when operator is attached to the same herdr session that owns the age
 ## lease laws
 - one mutation lease per worker; duplicate → LEASE_CONFLICT
 - no managed `default` for leased work (`default` is retired for coal)
-- orchestrator owns lease lifecycle; mark-exit if navigator dies without release; reap for ttl
+- fresh orchestrator owns one resource pair: navigator spawn + navigator cleanup; scheduled reap is the platform crash backstop
 - control plane atomic files under state/control/
 
 ## xai / coal specifics

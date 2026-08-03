@@ -210,14 +210,14 @@ Strict selector exclusion on resolve: account filter is exact; accountless resol
 2. **No managed `default`.** Coal and scratch refuse `default`.
 3. **Atomic control files** under `state/control/` (leases, index, worker locks, ports lock).
 4. **No secrets** in lease JSON, target-state, or `PROFILES.json`.
-5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` (status `expiring`). Scheduled TTL `reap` is a crash backstop for auto-reap-eligible leases only (`one_shot` / `expiring` / `--auto-reap`) — not default persistent sessions past 1h.
+5. **Fresh orchestrators use the resource pair.** `navigator spawn` acquires/binds; `navigator cleanup` in `finally` settles panes, owned tab, binding, and lease. Low-level `release` / `mark-exit` are platform/debug surfaces. Scheduled TTL `reap` is a crash backstop for eligible jobs only.
 6. **xAI conflict never kills the winner browser.**
 7. **Scratch CDP ports** under global `ports.lock` with retry.
 8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets live resize + bounded 1:1 screencast; default **fixed** layout viewport 1150×902 (`HERDR_BROWSER_VIEWPORT_MODE=fixed`) so pane resize scales the frame without reflowing page layout; opt-in `--viewport follow-pane` for dynamic reflow; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 37% / browser 63%.
 9. **Profile resolve** is deterministic; refuse ambiguity; emit-only (no acquire).
 10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `lease.profile_name` + `env.BROWSERCTL_PROFILE_NAME`.
 11. **Association learning** is explicit: after a successful login to a new site/account, run `profiles associate <name> <site> [account]` — never invent associations from URL heuristics.
-12. **Release/unwatch** clean up watch panes; orchestrator owns `finally`.
+12. **`navigator cleanup` owns settlement.** Low-level release/unwatch remain for diagnostics and env-contract-only flows.
 13. **Wipe only with `ephemeral_wipe_v1`** (new token workers); legacy `ephemeral_profile` alone never deletes dirs; named/explicit-worker scratches are stable.
 
 ---
@@ -412,9 +412,9 @@ Blind TTL reap is unsafe: default `persistent` leases mark `expired` after 1h wh
 - `reap --dry-run` lists what would be released under the same gate.
 - Skipped ineligible expired leases appear in JSON `skipped[]` with `reason=not_auto_reap_eligible`.
 
-**Normal path (fresh orchestrator):** `launch|spawn` → work → `release` in `finally`. Prefer `--mode one_shot` for finite navigator jobs so a crash still leaves an eligible lease for the backstop timer. You do **not** need the timer for happy-path cleanup.
+**Normal path (fresh orchestrator):** `navigator spawn` → work → `navigator cleanup` in `finally`. Prefer `--mode one_shot` for finite jobs. No manual env transfer, watch, release, mark-exit, or reap sequencing is required.
 
-**Crash backstop:** if the orchestrator dies without `release`, `one_shot` / `expiring` / `--auto-reap` leases are collected by periodic `reap`. Persistent active sessions are left alone.
+**Crash backstop:** if the orchestrator dies without cleanup, eligible navigator jobs are collected by periodic `reap`, which delegates through navigator settlement before stamping the lease reaped. Persistent active sessions are left alone.
 
 ### Scheduled timer (user systemd) — host admin, opt-in
 

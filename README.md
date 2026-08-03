@@ -28,7 +28,7 @@ Local browser control plane: CloakBrowser + CDP daemon + session leases + named 
 
 # finite navigator job: one_shot is auto-reap eligible if process crashes
 ./bin/browserctl spawn --kind scratch --label demo --mode one_shot --owner orch --json
-# normal cleanup is still release in finally — timer is crash backstop only
+# fresh orchestrators use navigator cleanup in finally; the timer is crash backstop only
 # host admin (opt-in): ./bin/browserctl-reap-timer install --enable --now
 ```
 
