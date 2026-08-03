@@ -109,9 +109,16 @@ Exact default geometry is guaranteed only when browserctl creates the dedicated 
 
 ### Named Herdr sessions
 
-If the orchestrator already runs inside the target session, ambient `HERDR_SOCKET_PATH` + `HERDR_PANE_ID` are sufficient; use the normal command unchanged.
+A named session can contain multiple workspaces. Ambient `HERDR_SOCKET_PATH` + `HERDR_PANE_ID` identify the server and orchestrator authority, but **do not rely on the session's focused workspace**. Derive the orchestrator pane's workspace and pass `--workspace` explicitly; otherwise the dedicated navigator tab may land in another focused workspace and same-workspace helper control will correctly reject it.
 
-For explicit targeting, provide the target session endpoint and workspace. The invoking process must also have `HERDR_PANE_ID` from that same target session because `herdr-agent-ctl` uses it as the orchestrator authority/receipt anchor:
+```bash
+workspace=$(herdr pane get "$HERDR_PANE_ID" | jq -r .result.pane.workspace_id)
+out=$(./bin/browserctl navigator spawn \
+  --kind scratch --label demo --owner orch --mode one_shot --watch \
+  --workspace "$workspace" --json)
+```
+
+For explicit targeting from another shell, provide the target session endpoint, ambient pane, and matching workspace. `HERDR_PANE_ID` must come from that target session because `herdr-agent-ctl` uses it as the orchestrator authority/receipt anchor:
 
 ```bash
 session=navigator-demo
@@ -129,7 +136,7 @@ out=$(./bin/browserctl navigator spawn \
 
 Bindings persist the exact session/socket, so later `navigator cleanup --lease …` targets the correct Herdr server even if the shell's ambient session differs. Do not mix a socket from one session with a pane/workspace id from another.
 
-**Recommended:** run the orchestrator inside the target Herdr session. Cross-session bootstrap from another shell is proven for spawn/watch/cleanup, but native orchestrator helper control remains same-workspace/session scoped. If you explicitly bootstrap across sessions, every `herdr-agent-ctl run/status/close` must use the target session's socket + ambient pane authority; do not expect the current workspace's orchestrator tools to control the foreign pane.
+**Recommended:** run the orchestrator inside the target Herdr session **and pass its derived workspace explicitly**. Cross-session bootstrap from another shell is proven for spawn/watch/cleanup, but native orchestrator helper control remains same-workspace/session scoped. If you explicitly bootstrap across sessions, every `herdr-agent-ctl run/status/close` must use the target session's socket + ambient pane authority; do not expect the current workspace's orchestrator tools to control the foreign pane.
 
 ### Named profile registry
 
