@@ -629,6 +629,7 @@ def test_navigator_spawn_optional_watch_after_pane(mgr, monkeypatch):
             "name": "nav-w",
             "watch": True,
             "ratio": 0.37,
+            "watch_input": "interactive",
         }
     )
     assert receipt["ok"] is True
@@ -636,6 +637,7 @@ def test_navigator_spawn_optional_watch_after_pane(mgr, monkeypatch):
     assert watch_calls
     assert watch_calls[0]["agent_pane"] == "w1:navW"
     assert watch_calls[0].get("direction") == "right"
+    assert watch_calls[0].get("watch_input") == "interactive"
     binding = load_binding(state, receipt["lease_id"])
     assert binding["watch_pane_id"] == "w1:mirror"
 

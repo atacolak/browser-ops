@@ -85,6 +85,7 @@ DEFAULT_VIEWPORT_MODE = "fixed"
 DEFAULT_VIEWPORT_WIDTH = 1150
 DEFAULT_VIEWPORT_HEIGHT = 902
 VIEWPORT_MODES = frozenset({"fixed", "follow-pane", "preserve"})
+WATCH_INPUT_MODES = frozenset({"read-only", "interactive"})
 
 # Bounded cold-start wait before failing watch with diagnostics.
 DEFAULT_READY_TIMEOUT_S = 20.0
@@ -269,66 +270,112 @@ def resolve_agent_pane(
 
 
 def probe_observe_mirror(root: Path) -> dict[str, Any]:
-    """
-    Capability probe: require observe_mirror-capable herdr-browser tree.
-
-    Pass if viewer entry exists and source mentions observe_mirror / target state.
-    Fail closed otherwise.
-    """
+    """Probe the viewer contract; structured capabilities are authoritative."""
     root = Path(root)
     reasons: list[str] = []
+    viewer = root / "src" / "viewer.ts"
+    cli = root / "src" / "cli.ts"
     if not root.is_dir():
         return {"ok": False, "root": str(root), "reasons": ["not a directory"]}
-
-    viewer = root / "src" / "viewer.ts"
     if not viewer.is_file():
         reasons.append("missing src/viewer.ts")
 
+    capabilities: dict[str, Any] | None = None
+    capability_error: str | None = None
+    if cli.is_file():
+        bun = shutil.which("bun") or "bun"
+        try:
+            proc = subprocess.run(
+                [bun, "run", str(cli), "capabilities"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                env={**os.environ, "HERDR_BROWSER_DAEMON_STATE": str(root / ".browserctl-capability-probe.json")},
+            )
+            if proc.returncode == 0:
+                payload = json.loads(proc.stdout)
+                caps = payload.get("capabilities") if isinstance(payload, dict) else None
+                if isinstance(caps, dict):
+                    capabilities = caps
+                else:
+                    capability_error = "capabilities payload missing object"
+            else:
+                capability_error = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+        except Exception as exc:
+            capability_error = f"{type(exc).__name__}: {exc}"
+    else:
+        capability_error = "missing src/cli.ts"
+
+    modes = capabilities.get("modes") if isinstance(capabilities, dict) else None
+    observe = capabilities.get("observe_mirror") if isinstance(capabilities, dict) else None
+    interactive = capabilities.get("interactive_mirror") if isinstance(capabilities, dict) else None
+    structured_observe = bool(
+        isinstance(modes, list)
+        and "observe_mirror" in modes
+        and isinstance(observe, dict)
+        and observe.get("read_only") is True
+        and observe.get("creates_targets") is False
+        and observe.get("closes_targets") is False
+    )
+    structured_interactive = bool(
+        isinstance(modes, list)
+        and "interactive_mirror" in modes
+        and isinstance(interactive, dict)
+        and interactive.get("read_only") is False
+        and interactive.get("page_input") is True
+        and interactive.get("navigation") is True
+        and interactive.get("creates_targets") is False
+        and interactive.get("closes_targets") is False
+        and interactive.get("browser_lifecycle") is False
+        and interactive.get("automation_gateway") is False
+    )
+
+    # Backward-compatible read-only discovery for older local trees. This is
+    # never sufficient to authorize interactive input.
     has_mode = False
     has_target_state = False
     for rel in _OBSERVE_MIRROR_MARKERS:
-        p = root / rel
-        if not p.is_file():
-            reasons.append(f"missing {rel}")
+        source = root / rel
+        if not source.is_file():
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            reasons.append(f"unreadable {rel}: {e}")
-            continue
-        if "observe_mirror" in text or "observe-mirror" in text:
-            has_mode = True
-        if "HERDR_BROWSER_TARGET_STATE" in text or "active_target_id" in text:
-            has_target_state = True
-
-    # Also accept package-level README markers if sources are minified-absent
-    readme = root / "README.md"
-    if readme.is_file() and not has_mode:
-        try:
-            rtext = readme.read_text(encoding="utf-8", errors="replace")
-            if "observe_mirror" in rtext:
-                has_mode = True
+            text = source.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            pass
+            continue
+        has_mode = has_mode or "observe_mirror" in text or "observe-mirror" in text
+        has_target_state = has_target_state or "HERDR_BROWSER_TARGET_STATE" in text or "active_target_id" in text
+    source_observe = bool(viewer.is_file() and has_mode and has_target_state)
+    read_only_ok = bool(viewer.is_file() and (structured_observe or source_observe))
+    if not read_only_ok:
+        reasons.append("no valid observe_mirror contract")
 
-    if not has_mode:
-        reasons.append("no observe_mirror marker in sources")
-    if not has_target_state:
-        reasons.append("no HERDR_BROWSER_TARGET_STATE / active_target_id marker")
-
-    ok = viewer.is_file() and has_mode and has_target_state and not any(
-        r.startswith("missing src/") for r in reasons
-    )
-    # tighten: must have viewer + mode + target state
-    ok = bool(viewer.is_file() and has_mode and has_target_state)
     return {
-        "ok": ok,
+        "ok": read_only_ok,
         "root": str(root),
         "has_viewer": viewer.is_file(),
-        "has_observe_mirror": has_mode,
-        "has_target_state": has_target_state,
-        "reasons": reasons if not ok else [],
+        "has_observe_mirror": read_only_ok,
+        "has_interactive_mirror": structured_interactive,
+        "structured": capabilities is not None,
+        "capabilities": capabilities,
+        "capability_error": capability_error,
+        "reasons": reasons if not read_only_ok else [],
     }
+
+
+def require_watch_input_capability(probe: dict[str, Any], watch_input: str) -> None:
+    if watch_input == "read-only":
+        if probe.get("ok"):
+            return
+        raise AdapterError("viewer root lacks observe_mirror capability", probe=probe)
+    if watch_input == "interactive" and probe.get("has_interactive_mirror") is True:
+        return
+    raise AdapterError(
+        "interactive watch requires structured interactive_mirror capabilities "
+        "with page input/navigation enabled and target/lifecycle mutation disabled",
+        probe=probe,
+    )
 
 
 def viewer_root_config_path(
@@ -780,6 +827,20 @@ def wait_for_viewer_process(
     )
 
 
+
+def normalize_watch_input(value: str | None) -> str:
+    if value is None or str(value).strip() == "":
+        return "read-only"
+    normalized = str(value).strip().lower().replace("_", "-")
+    if normalized in ("readonly", "read-only", "observe"):
+        return "read-only"
+    if normalized in ("interactive", "input", "control"):
+        return "interactive"
+    raise InvalidRequest(
+        f"watch-input must be one of {sorted(WATCH_INPUT_MODES)} (got {value!r})",
+        watch_input=value,
+    )
+
 def normalize_viewport_mode(mode: str | None) -> str:
     """Accept fixed|follow-pane|preserve; default fixed."""
     if mode is None or str(mode).strip() == "":
@@ -816,6 +877,7 @@ def build_mirror_env(
     cdp_url: str,
     target_state_path: str | Path,
     viewer_root: Path | str | None = None,
+    watch_input: str | None = None,
     viewport: str | None = None,
     viewport_width: int | float | str | None = None,
     viewport_height: int | float | str | None = None,
@@ -832,6 +894,7 @@ def build_mirror_env(
     never mutates layout. WATCH_RESIZE stays on in all modes for the graphics
     stream loop.
     """
+    input_mode = normalize_watch_input(watch_input)
     mode = normalize_viewport_mode(viewport)
     width = normalize_viewport_dim(viewport_width, name="viewport_width")
     height = normalize_viewport_dim(viewport_height, name="viewport_height")
@@ -847,7 +910,7 @@ def build_mirror_env(
         height = height if height is not None else DEFAULT_VIEWPORT_HEIGHT
 
     env: dict[str, str] = {
-        "HERDR_BROWSER_MODE": "observe_mirror",
+        "HERDR_BROWSER_MODE": "interactive_mirror" if input_mode == "interactive" else "observe_mirror",
         "HERDR_BROWSER_TARGET_STATE": str(target_state_path),
         "HERDR_BROWSER_CDP_URL": str(cdp_url).rstrip("/"),
         # Bound frames to the capture raster. Unbounded screenshots preserve the
@@ -1188,6 +1251,7 @@ def start_watch(
     herdr_socket: str | None = None,
     ready_timeout_s: float = DEFAULT_READY_TIMEOUT_S,
     ready_poll_s: float = DEFAULT_READY_POLL_S,
+    watch_input: str | None = None,
     viewport: str | None = None,
     viewport_width: int | float | str | None = None,
     viewport_height: int | float | str | None = None,
@@ -1237,11 +1301,8 @@ def start_watch(
     agent = resolve_agent_pane(agent_pane, endpoint=endpoint)
     viewer_cwd = resolve_viewer_cwd(require_capable=True)
     probe = probe_observe_mirror(viewer_cwd)
-    if not probe["ok"]:
-        raise AdapterError(
-            "viewer root failed observe_mirror capability probe (fail closed)",
-            probe=probe,
-        )
+    input_mode = normalize_watch_input(watch_input)
+    require_watch_input_capability(probe, input_mode)
 
     viewport_mode = normalize_viewport_mode(viewport)
     fixed_width = normalize_viewport_dim(viewport_width, name="viewport_width")
@@ -1250,6 +1311,7 @@ def start_watch(
         cdp_url=cdp_url,
         target_state_path=target_path,
         viewer_root=viewer_cwd,
+        watch_input=input_mode,
         viewport=viewport_mode,
         viewport_width=fixed_width,
         viewport_height=fixed_height,
@@ -1303,6 +1365,7 @@ def start_watch(
         "watch_pane_id": watch_pane,
         "direction": direction,
         "ratio": ratio,
+        "watch_input": input_mode,
         "viewport": viewport_meta,
         "viewer_cwd": str(viewer_cwd),
         "viewer_command": cmd,
@@ -1310,6 +1373,8 @@ def start_watch(
             "ok": True,
             "root": str(viewer_cwd),
             "has_observe_mirror": True,
+            "has_interactive_mirror": bool(probe.get("has_interactive_mirror")),
+            "structured": bool(probe.get("structured")),
         },
         "viewer_start": {
             "ok": True,

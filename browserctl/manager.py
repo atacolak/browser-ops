@@ -437,6 +437,7 @@ class Manager:
         herdr_session: str | None = None,
         herdr_socket: str | None = None,
         ready_timeout_s: float | None = None,
+        watch_input: str | None = None,
         viewport: str | None = None,
         viewport_width: int | float | str | None = None,
         viewport_height: int | float | str | None = None,
@@ -462,9 +463,19 @@ class Manager:
                 f"cannot watch lease in status {lease.get('status')!r}"
             )
 
-        # idempotent: already watching
+        requested_input = watch_mod.normalize_watch_input(watch_input)
+
+        # idempotent only when the existing pane has the requested policy.
         existing = lease.get("watch") or {}
         if existing.get("watch_pane_id"):
+            existing_input = watch_mod.normalize_watch_input(existing.get("watch_input"))
+            if existing_input != requested_input:
+                raise InvalidRequest(
+                    "watch already exists with a different input policy; "
+                    "unwatch before changing --watch-input",
+                    existing_watch_input=existing_input,
+                    requested_watch_input=requested_input,
+                )
             return {
                 "ok": True,
                 "idempotent": True,
@@ -492,6 +503,7 @@ class Manager:
             direction=direction,
             herdr_session=herdr_session,
             herdr_socket=herdr_socket,
+            watch_input=requested_input,
             viewport=viewport,
             viewport_width=viewport_width,
             viewport_height=viewport_height,

@@ -838,6 +838,7 @@ class NavigatorLifecycle:
             "viewport",
             "viewport_width",
             "viewport_height",
+            "watch_input",
             "direction",
             "ratio",
             "ready_timeout",
@@ -848,7 +849,7 @@ class NavigatorLifecycle:
         # Keep viewport* on req for watch kwargs; strip from acquire.
         watch_extras = {
             k: req[k]
-            for k in ("viewport", "viewport_width", "viewport_height", "direction")
+            for k in ("viewport", "viewport_width", "viewport_height", "watch_input", "direction")
             if k in req and req.get(k) is not None
         }
 

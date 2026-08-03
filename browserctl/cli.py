@@ -131,6 +131,7 @@ def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = Fa
         req["ready_timeout"] = getattr(args, "ready_timeout", None)
         req["herdr_session"] = getattr(args, "herdr_session", None)
         req["herdr_socket"] = getattr(args, "herdr_socket", None)
+        req["watch_input"] = getattr(args, "watch_input", None)
         # Viewport modes are normalized by watch.py; CLI only passes values.
         if getattr(args, "viewport", None) is not None:
             req["viewport"] = args.viewport
@@ -183,6 +184,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         herdr_session=args.herdr_session,
         herdr_socket=args.herdr_socket,
         ready_timeout_s=getattr(args, "ready_timeout", None),
+        watch_input=getattr(args, "watch_input", None),
         viewport=getattr(args, "viewport", None),
         viewport_width=getattr(args, "viewport_width", None),
         viewport_height=getattr(args, "viewport_height", None),
@@ -393,6 +395,20 @@ def _add_profile_flag(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_watch_input_flag(p: argparse.ArgumentParser, *, with_watch_prefix: bool = False) -> None:
+    prefix = "with --watch: " if with_watch_prefix else ""
+    p.add_argument(
+        "--watch-input",
+        default="read-only",
+        choices=["read-only", "interactive"],
+        help=(
+            f"{prefix}browser pane input policy (default read-only; "
+            "interactive enables human mouse/keyboard/current-page navigation "
+            "without target or browser lifecycle ownership)"
+        ),
+    )
+
+
 def _add_viewport_flags(
     p: argparse.ArgumentParser,
     *,
@@ -522,6 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="right",
         choices=["right", "down"],
     )
+    _add_watch_input_flag(w)
     _add_viewport_flags(w)
     w.set_defaults(func=cmd_watch)
 
@@ -611,6 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="with --watch: readiness wait seconds (default 20)",
         )
+        _add_watch_input_flag(lp, with_watch_prefix=True)
         _add_viewport_flags(lp, with_watch_prefix=True)
         lp.set_defaults(func=cmd_launch)
 
@@ -729,6 +747,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="with --watch: readiness wait seconds (default 20)",
     )
+    _add_watch_input_flag(nsp, with_watch_prefix=True)
     _add_viewport_flags(nsp, with_watch_prefix=True)
     nsp.set_defaults(func=cmd_navigator_spawn)
 

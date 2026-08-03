@@ -805,6 +805,28 @@ def test_build_mirror_env_default_fixed_viewport(tmp_path: Path):
     assert env["HERDR_BROWSER_ROOT"] == str(tmp_path / "viewer")
 
 
+def test_build_mirror_env_interactive_sets_bounded_plugin_mode(tmp_path: Path):
+    env = watch_mod.build_mirror_env(
+        cdp_url="http://127.0.0.1:9333",
+        target_state_path=tmp_path / "active-target.json",
+        watch_input="interactive",
+    )
+    assert env["HERDR_BROWSER_MODE"] == "interactive_mirror"
+    assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+
+
+def test_require_interactive_watch_needs_structured_safe_capabilities():
+    with pytest.raises(AdapterError):
+        watch_mod.require_watch_input_capability(
+            {"ok": True, "structured": False, "has_interactive_mirror": False},
+            "interactive",
+        )
+    watch_mod.require_watch_input_capability(
+        {"ok": True, "structured": True, "has_interactive_mirror": True},
+        "interactive",
+    )
+
+
 def test_build_mirror_env_follow_pane_opt_in(tmp_path: Path):
     env = watch_mod.build_mirror_env(
         cdp_url="http://127.0.0.1:9333",
@@ -851,6 +873,14 @@ def test_build_mirror_env_rejects_size_outside_fixed(tmp_path: Path):
             viewport="follow-pane",
             viewport_width=800,
         )
+
+
+def test_normalize_watch_input_defaults_read_only_and_validates():
+    assert watch_mod.normalize_watch_input(None) == "read-only"
+    assert watch_mod.normalize_watch_input("readonly") == "read-only"
+    assert watch_mod.normalize_watch_input("interactive") == "interactive"
+    with pytest.raises(InvalidRequest):
+        watch_mod.normalize_watch_input("full-control")
 
 
 def test_normalize_viewport_mode_aliases():

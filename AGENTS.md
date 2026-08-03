@@ -105,6 +105,8 @@ navigator tab root, split none
 | `follow-pane` | Opt-in `--viewport follow-pane`; pane resize updates CDP device metrics and reflows responsive page layout. |
 | `preserve` | Never mutates the attached browser viewport; useful when another controller owns layout. |
 
+Watch input is a separate policy: `--watch-input read-only` is the default; `--watch-input interactive` permits human mouse, wheel, keyboard, URL navigation, back/forward/reload/stop on the current target. Both mirror modes forbid target creation/closure, tab switching, automation gateway access, and browser lifecycle ownership.
+
 Exact default geometry is guaranteed only when browserctl creates the dedicated tab. Explicit `--tab` is advanced caller-owned topology (`owns_tab=false`, `geometry_guaranteed=false`); cleanup never closes it.
 
 ### Named Herdr sessions
