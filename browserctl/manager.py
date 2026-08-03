@@ -359,12 +359,24 @@ class Manager:
                 }
 
             watch_result = None
+            watch_incomplete = False
             if lease.get("watch") and not keep_watch:
                 try:
                     watch_result = watch_mod.stop_watch(lease, close=True)
                 except Exception as e:
-                    watch_result = {"error": str(e)}
-                lease["watch"] = None
+                    watch_result = {
+                        "closed": False,
+                        "error": str(e),
+                        "watch_pane_id": (lease.get("watch") or {}).get(
+                            "watch_pane_id"
+                        ),
+                    }
+                lease["last_watch_stop"] = watch_result
+                if watch_result.get("closed"):
+                    lease["watch"] = None
+                else:
+                    # Keep watch binding so a later release/unwatch can retry.
+                    watch_incomplete = True
 
             adapter = get_adapter(lease.get("adapter") or lease.get("kind") or "scratch")
             try:
@@ -375,19 +387,22 @@ class Manager:
                 release_result = {"status": "error", "error": str(e), "force": True}
 
             # Incomplete wipe/process cleanup stays retryable (non-terminal).
+            # Unconfirmed watch close is also incomplete (do not claim settled).
             release_status = str((release_result or {}).get("status") or "")
-            incomplete = bool((release_result or {}).get("cleanup_incomplete")) or (
-                release_status in ("partial", "error")
+            incomplete = (
+                bool((release_result or {}).get("cleanup_incomplete"))
+                or release_status in ("partial", "error")
+                or watch_incomplete
             )
 
             lease = touch_lease(lease)
             lease["release_result"] = release_result
-            if watch_result is not None:
-                lease["last_watch_stop"] = watch_result
             if incomplete:
                 lease["status"] = "expiring"
                 meta = dict(lease.get("meta") or {})
                 meta["release_incomplete"] = True
+                if watch_incomplete:
+                    meta["watch_close_incomplete"] = True
                 if (release_result or {}).get("cleanup_error"):
                     meta["release_cleanup_error"] = release_result["cleanup_error"]
                 lease["meta"] = meta
@@ -397,6 +412,7 @@ class Manager:
                 meta = dict(lease.get("meta") or {})
                 meta.pop("release_incomplete", None)
                 meta.pop("release_cleanup_error", None)
+                meta.pop("watch_close_incomplete", None)
                 lease["meta"] = meta
             save_lease(self.state_root, lease)
 
@@ -424,7 +440,14 @@ class Manager:
         viewport: str | None = None,
         viewport_width: int | float | str | None = None,
         viewport_height: int | float | str | None = None,
+        **watch_extras: Any,
     ) -> dict[str, Any]:
+        """Open observe_mirror watch.
+
+        ``**watch_extras`` is forwarded to ``start_watch`` so parallel workers
+        (e.g. viewport modes) can land new kwargs without signature thrash.
+        Unknown keys are filtered against ``start_watch`` parameters.
+        """
         if lease_id:
             lease = require_lease(self.state_root, lease_id)
         elif worker_id:
@@ -452,6 +475,14 @@ class Manager:
         ready_kwargs: dict[str, Any] = {}
         if ready_timeout_s is not None:
             ready_kwargs["ready_timeout_s"] = float(ready_timeout_s)
+
+        # Forward known start_watch extras (viewport*, etc.) without hardcoding.
+        import inspect
+
+        start_params = set(inspect.signature(watch_mod.start_watch).parameters)
+        for key, val in watch_extras.items():
+            if key in start_params and val is not None:
+                ready_kwargs[key] = val
 
         watch_rec = watch_mod.start_watch(
             lease,
@@ -508,10 +539,20 @@ class Manager:
 
         result = watch_mod.stop_watch(lease, close=close)
         lease = touch_lease(lease)
-        lease["watch"] = None
         lease["last_watch_stop"] = result
+        # Only drop the binding when close was not requested, or close has evidence.
+        if not close or result.get("closed"):
+            lease["watch"] = None
+            ok = True
+        else:
+            ok = False
         save_lease(self.state_root, lease)
-        return {"ok": True, "lease_id": lease["lease_id"], "unwatch": result}
+        return {
+            "ok": ok,
+            "lease_id": lease["lease_id"],
+            "unwatch": result,
+            "retryable": bool(close) and not result.get("closed"),
+        }
 
     # ── reap / mark ──────────────────────────────────────────────────────
 
@@ -548,8 +589,7 @@ class Manager:
         """Reap expired auto-reap-eligible leases (or one forced id). Idempotent.
 
         Crash backstop for orchestrator/navigator jobs that never reached
-        ``release`` — not the happy-path cleanup. Scheduled runs skip
-        default persistent active leases past wall-clock TTL; see
+        cleanup. Scheduled runs skip default persistent active leases; see
         ``is_auto_reap_eligible``. ``force_lease_id`` bypasses that gate.
         """
         now = now if now is not None else time.time()
@@ -580,7 +620,7 @@ class Manager:
                 if not is_expired(lease, now=now):
                     continue
                 # Scheduled reap must not kill intentionally long-lived
-                # persistent sessions that only aged past default 1h TTL.
+                # persistent sessions past the observability TTL stamp.
                 if not is_auto_reap_eligible(lease):
                     skipped.append(
                         {
@@ -662,6 +702,8 @@ class Manager:
         Convenient acquire (+ optional watch) returning navigator spawn env.
 
         Alias surface for orchestrators: browserctl launch|spawn ...
+        Note: this returns the env *contract* only. To actually start a
+        navigator pane use ``navigator spawn`` (orchestrator-only seam).
         """
         result = self.acquire(request)
         if request.get("watch"):
@@ -669,21 +711,64 @@ class Manager:
                 ready_timeout = request.get("ready_timeout")
                 if ready_timeout is None:
                     ready_timeout = request.get("ready_timeout_s")
-                w = self.watch(
-                    lease_id=result["lease"]["lease_id"],
-                    agent_pane=request.get("agent_pane"),
-                    ratio=request.get("ratio"),
-                    herdr_session=request.get("herdr_session"),
-                    herdr_socket=request.get("herdr_socket"),
-                    ready_timeout_s=(
+                # Forward optional watch extras (viewport*) without hardcoding.
+                watch_kwargs: dict[str, Any] = {
+                    "lease_id": result["lease"]["lease_id"],
+                    "agent_pane": request.get("agent_pane"),
+                    "ratio": request.get("ratio"),
+                    "herdr_session": request.get("herdr_session"),
+                    "herdr_socket": request.get("herdr_socket"),
+                    "ready_timeout_s": (
                         float(ready_timeout) if ready_timeout is not None else None
                     ),
-                    viewport=request.get("viewport"),
-                    viewport_width=request.get("viewport_width"),
-                    viewport_height=request.get("viewport_height"),
-                )
+                }
+                for key in (
+                    "viewport",
+                    "viewport_width",
+                    "viewport_height",
+                    "direction",
+                ):
+                    if key in request and request.get(key) is not None:
+                        watch_kwargs[key] = request.get(key)
+                w = self.watch(**watch_kwargs)
                 result["watch"] = w.get("watch")
                 result["mirror_env"] = w.get("mirror_env")
             except Exception as e:
                 result["watch_error"] = str(e)
         return result
+
+    # ── navigator lifecycle (orchestrator-only) ──────────────────────────
+
+    def navigator_spawn(self, request: dict[str, Any]) -> dict[str, Any]:
+        from browserctl.navigator import NavigatorLifecycle
+
+        return NavigatorLifecycle(self).spawn(request)
+
+    def navigator_cleanup(
+        self,
+        *,
+        lease_id: str | None = None,
+        name: str | None = None,
+        force: bool = False,
+        keep_watch: bool = False,
+        skip_navigator_close: bool = False,
+    ) -> dict[str, Any]:
+        from browserctl.navigator import NavigatorLifecycle
+
+        return NavigatorLifecycle(self).cleanup(
+            lease_id=lease_id,
+            name=name,
+            force=force,
+            keep_watch=keep_watch,
+            skip_navigator_close=skip_navigator_close,
+        )
+
+    def navigator_status(
+        self,
+        *,
+        lease_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        from browserctl.navigator import NavigatorLifecycle
+
+        return NavigatorLifecycle(self).status(lease_id=lease_id, name=name)

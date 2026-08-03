@@ -9,19 +9,21 @@ Local browser control plane: CloakBrowser + CDP daemon + session leases + named 
 ## Quick start — browserctl
 
 ```bash
-# scratch demo
+# orchestrator navigator lifecycle (preferred)
+./bin/browserctl navigator spawn --kind scratch --label demo --owner you --json
+./bin/browserctl navigator cleanup --lease <id> --json
+
+# env-contract only (no pane)
 ./bin/browserctl launch --kind scratch --label demo --owner you --json
 
 # xAI coal (requires identity bind)
-./bin/browserctl launch --kind xai --email 'USER@host' --json
+./bin/browserctl navigator spawn --kind xai --email 'USER@host' --json
 
 # named profile registry (no secrets; resolve does not start browsers)
 ./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
 ./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json
 ./bin/browserctl profiles resolve x.ai --account 'USER@host' --json
 
-./bin/browserctl watch --lease <id> --agent-pane <nav-pane> --json
-./bin/browserctl release --lease <id> --json
 ./bin/browserctl list --json
 
 # finite navigator job: one_shot is auto-reap eligible if process crashes
@@ -30,7 +32,7 @@ Local browser control plane: CloakBrowser + CDP daemon + session leases + named 
 # host admin (opt-in): ./bin/browserctl-reap-timer install --enable --now
 ```
 
-Spawn navigator **with returned `env`**. It must not allocate ports/profiles.
+Navigators are orchestrator-only. Prefer `navigator spawn` / `navigator cleanup` over hand-joining lease + agent-ctl + watch + release. Navigators must not allocate ports/profiles.
 
 ---
 

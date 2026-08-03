@@ -1026,8 +1026,14 @@ def test_start_watch_closes_pane_when_viewer_fails_to_start(tmp_path: Path, monk
 
     closed: list[str] = []
 
-    def fake_close(pane_id, endpoint=None):
+    def fake_close(pane_id, endpoint=None, verify=True):
         closed.append(pane_id)
+        return {
+            "pane_id": pane_id,
+            "closed": True,
+            "close_submitted": True,
+            "evidence": "not_found",
+        }
 
     monkeypatch.setattr(watch_mod, "close_pane", fake_close)
 

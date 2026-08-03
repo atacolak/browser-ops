@@ -481,11 +481,164 @@ def run_in_pane(
     _run_herdr(["pane", "run", pane_id, command], endpoint=endpoint)
 
 
-def close_pane(pane_id: str, *, endpoint: dict[str, str] | None = None) -> None:
+def _pane_missing_signal(message: str, *, stderr: str = "", stdout: str = "") -> bool:
+    """True when herdr output indicates the pane id is already gone."""
+    blob = " ".join(
+        x for x in (message or "", stderr or "", stdout or "") if x
+    ).lower()
+    if not blob:
+        return False
+    needles = (
+        "not found",
+        "unknown pane",
+        "no such pane",
+        "invalid pane",
+        "pane does not exist",
+        "unknown pane_id",
+    )
+    return any(n in blob for n in needles)
+
+
+def pane_get(
+    pane_id: str,
+    *,
+    endpoint: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Fetch herdr pane get envelope (raises AdapterError on failure)."""
+    return _run_herdr(["pane", "get", str(pane_id)], endpoint=endpoint or {})
+
+
+def verify_pane_absent(
+    pane_id: str,
+    *,
+    endpoint: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """
+    Evidence-based absence check for a pane id.
+
+    Returns {absent, evidence, error?} — absent is True only when herdr
+    clearly reports the pane is gone. Ambiguous herdr failures → absent False
+    (fail closed).
+    """
+    endpoint = endpoint or {}
     try:
-        _run_herdr(["pane", "close", pane_id], endpoint=endpoint or {})
-    except AdapterError:
-        pass
+        resp = pane_get(pane_id, endpoint=endpoint)
+    except AdapterError as e:
+        stderr = str((e.details or {}).get("stderr") or "")
+        stdout = str((e.details or {}).get("stdout") or "")
+        if _pane_missing_signal(e.message, stderr=stderr, stdout=stdout):
+            return {
+                "absent": True,
+                "evidence": "not_found",
+                "pane_id": str(pane_id),
+                "error": e.message,
+            }
+        return {
+            "absent": False,
+            "evidence": "verify_error",
+            "pane_id": str(pane_id),
+            "error": e.message,
+            "stderr": stderr[-500:] if stderr else None,
+        }
+
+    found_id = _extract_pane_id(resp if isinstance(resp, dict) else {})
+    if found_id and str(found_id) == str(pane_id):
+        return {
+            "absent": False,
+            "evidence": "still_present",
+            "pane_id": str(pane_id),
+            "found_pane_id": str(found_id),
+        }
+    # Successful get without matching pane_id is ambiguous — fail closed.
+    if found_id:
+        return {
+            "absent": False,
+            "evidence": "unexpected_pane",
+            "pane_id": str(pane_id),
+            "found_pane_id": str(found_id),
+        }
+    return {
+        "absent": False,
+        "evidence": "unparseable_get",
+        "pane_id": str(pane_id),
+        "response_keys": sorted(resp.keys()) if isinstance(resp, dict) else [],
+    }
+
+
+def close_pane(
+    pane_id: str,
+    *,
+    endpoint: dict[str, str] | None = None,
+    verify: bool = True,
+) -> dict[str, Any]:
+    """
+    Close a herdr pane and return structured proof.
+
+    Does **not** swallow errors. ``closed`` is True only when absence is
+    verified (or close is skipped because the pane was already absent).
+    Callers must inspect the return value — never assume success.
+    """
+    endpoint = endpoint or {}
+    pid = str(pane_id)
+    result: dict[str, Any] = {
+        "pane_id": pid,
+        "close_submitted": False,
+        "closed": False,
+        "already_absent": False,
+        "error": None,
+        "verify": None,
+    }
+
+    close_error: str | None = None
+    close_details: dict[str, Any] = {}
+    try:
+        _run_herdr(["pane", "close", pid], endpoint=endpoint)
+        result["close_submitted"] = True
+    except AdapterError as e:
+        close_error = e.message
+        close_details = dict(e.details or {})
+        stderr = str(close_details.get("stderr") or "")
+        stdout = str(close_details.get("stdout") or "")
+        # If herdr says the pane is already gone, treat as successful no-op
+        # only after verify (below) confirms absence.
+        result["close_error"] = close_error
+        result["close_stderr"] = stderr[-500:] if stderr else None
+        if not verify and _pane_missing_signal(close_error, stderr=stderr, stdout=stdout):
+            result["closed"] = True
+            result["already_absent"] = True
+            result["evidence"] = "close_not_found"
+            return result
+
+    if not verify:
+        # Explicit no-verify path still refuses to claim closed without evidence.
+        result["closed"] = False
+        result["error"] = close_error or "close_submitted_unverified"
+        result["evidence"] = "unverified"
+        return result
+
+    absence = verify_pane_absent(pid, endpoint=endpoint)
+    result["verify"] = {
+        "absent": absence.get("absent"),
+        "evidence": absence.get("evidence"),
+        "error": absence.get("error"),
+    }
+    if absence.get("absent"):
+        result["closed"] = True
+        result["already_absent"] = not result["close_submitted"]
+        result["evidence"] = absence.get("evidence")
+        result["error"] = None
+        return result
+
+    # Still present or verify ambiguous — fail closed, surface errors.
+    result["closed"] = False
+    result["evidence"] = absence.get("evidence") or "still_present"
+    err_parts = [p for p in (close_error, absence.get("error")) if p]
+    if absence.get("evidence") == "still_present":
+        err_parts.append(f"pane {pid!r} still present after close")
+    result["error"] = "; ".join(err_parts) if err_parts else (
+        f"pane {pid!r} close not confirmed"
+    )
+    return result
 
 
 def pane_process_info(
@@ -1127,11 +1280,12 @@ def start_watch(
         )
     except AdapterError as e:
         # Roll back the newly split pane so failures do not leave orphans.
-        close_pane(watch_pane, endpoint=endpoint)
+        close_result = close_pane(watch_pane, endpoint=endpoint)
         raise AdapterError(
             f"watch pane started then failed: {e.message}",
             watch_pane_id=watch_pane,
-            closed_on_failure=True,
+            closed_on_failure=bool(close_result.get("closed")),
+            close_on_failure=close_result,
             **(e.details or {}),
         ) from e
 
@@ -1181,31 +1335,74 @@ def start_watch(
 
 
 def stop_watch(lease: dict[str, Any], *, close: bool = True) -> dict[str, Any]:
+    """
+    Stop/unbind watch for a lease.
+
+    ``closed`` is True only with evidence the watch pane is gone (or there was
+    no pane to close). Never claims closed on a swallowed herdr error.
+    """
     watch = lease.get("watch") or {}
     pane = watch.get("watch_pane_id")
-    endpoint = resolve_herdr_endpoint(
-        herdr_session=watch.get("herdr_session"),
-        herdr_socket=watch.get("herdr_socket"),
-        lease_watch=watch,
-    ) if (watch.get("herdr_socket") or watch.get("herdr_session") or
-          os.environ.get("HERDR_SOCKET_PATH") or os.environ.get("HERDR_SESSION")) else {}
-    closed = False
-    if pane and close:
-        # Prefer bound endpoint; fall back to env-only close if unresolved
+    endpoint: dict[str, str] = {}
+    endpoint_error: str | None = None
+    if watch.get("herdr_socket") or watch.get("herdr_session") or os.environ.get(
+        "HERDR_SOCKET_PATH"
+    ) or os.environ.get("HERDR_SESSION"):
         try:
-            if endpoint:
-                close_pane(str(pane), endpoint=endpoint)
-            else:
-                close_pane(str(pane), endpoint={})
-            closed = True
-        except InvalidRequest:
-            # last resort without fail — best-effort close on default env
-            close_pane(str(pane), endpoint={})
-            closed = True
-    return {
+            endpoint = resolve_herdr_endpoint(
+                herdr_session=watch.get("herdr_session"),
+                herdr_socket=watch.get("herdr_socket"),
+                lease_watch=watch,
+            )
+        except InvalidRequest as e:
+            endpoint_error = e.message
+            endpoint = {}
+
+    result: dict[str, Any] = {
         "watch_pane_id": pane,
-        "closed": closed,
+        "closed": False,
+        "close_requested": bool(close),
         "agent_pane_id": watch.get("agent_pane_id"),
-        "herdr_socket": watch.get("herdr_socket"),
-        "herdr_session": watch.get("herdr_session"),
+        "herdr_socket": watch.get("herdr_socket") or endpoint.get("herdr_socket"),
+        "herdr_session": watch.get("herdr_session") or endpoint.get("herdr_session"),
+        "close": None,
+        "error": None,
     }
+
+    if not pane:
+        # Nothing bound — vacuously settled.
+        result["closed"] = True
+        result["evidence"] = "no_watch_pane"
+        return result
+
+    if not close:
+        # Unbind-only: do not claim the pane was closed.
+        result["closed"] = False
+        result["evidence"] = "unbind_only"
+        return result
+
+    if endpoint_error and not endpoint:
+        # Try env-only close still, but never claim success without verify.
+        result["endpoint_error"] = endpoint_error
+
+    close_result = close_pane(str(pane), endpoint=endpoint or {})
+    result["close"] = {
+        "closed": close_result.get("closed"),
+        "close_submitted": close_result.get("close_submitted"),
+        "already_absent": close_result.get("already_absent"),
+        "evidence": close_result.get("evidence"),
+        "error": close_result.get("error"),
+        "verify": close_result.get("verify"),
+    }
+    if close_result.get("closed"):
+        result["closed"] = True
+        result["evidence"] = close_result.get("evidence") or "verified_absent"
+        result["error"] = None
+        return result
+
+    result["closed"] = False
+    result["evidence"] = close_result.get("evidence") or "close_unconfirmed"
+    result["error"] = close_result.get("error") or (
+        f"watch pane {pane!r} close not confirmed"
+    )
+    return result

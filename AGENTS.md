@@ -43,21 +43,29 @@ Human entry: [`README.md`](./README.md) · CLI: [`docs/browserctl.md`](./docs/br
 
 ## Canonical lifecycle: browserctl
 
+**Preferred (orchestrator resource pair — no hand-joined primitives):**
+
 ```text
-browserctl launch|acquire  →  spawn navigator with returned env  →  release in finally
-                 ↘ optional: browserctl watch (observe_mirror pane)
+browserctl navigator spawn  →  herdr-agent-ctl run (task)  →  browserctl navigator cleanup
+         ↘ optional --watch after navigator pane exists
 ```
 
 ```bash
-out=$(./bin/browserctl launch --kind scratch --label demo --owner orch --json)
-out=$(./bin/browserctl launch --kind xai --email 'USER@host' --owner orch --json)
-out=$(./bin/browserctl launch --profile coal-demo --owner orch --json)  # named
-lease=$(jq -r .lease.lease_id <<<"$out")
-# spawn navigator: cwd=browser-ops, env=out.env
-# optional mirror (waits CDP + non-null active_target_id; default agent 37% / browser 63%):
-# ./bin/browserctl watch --lease "$lease" --agent-pane "$HERDR_PANE_ID" \
-#   --herdr-socket "$HERDR_SOCKET_PATH" --json
-./bin/browserctl release --lease "$lease" --json   # also closes watch pane unless --keep-watch
+out=$(./bin/browserctl navigator spawn --kind scratch --label demo --owner orch --mode one_shot --watch --json)
+out=$(./bin/browserctl navigator spawn --kind xai --email 'USER@host' --owner orch --json)
+out=$(./bin/browserctl navigator spawn --profile coal-demo --owner orch --json)
+lease=$(jq -r .lease_id <<<"$out")
+target=$(jq -r .next.run_target <<<"$out")
+# dispatch task: herdr-agent-ctl run --target "$target" --prompt '…'
+./bin/browserctl navigator cleanup --lease "$lease" --json   # finally; idempotent
+# finite jobs: --mode one_shot (or --auto-reap) → scheduled reap crash backstop
+```
+
+**Env-contract only** (no navigator pane; legacy/manual):
+
+```text
+browserctl launch|acquire  →  spawn navigator with returned env  →  release in finally
+                 ↘ optional: browserctl watch (observe_mirror pane)
 ```
 
 | Kind | Adapter | Notes |

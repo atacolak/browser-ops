@@ -1,7 +1,16 @@
 # browserctl
 
-Thin human + agent CLI for **browser session leases** and **named profile lookup**.  
-Navigators do **not** allocate raw CDP/profile resources; orchestrators/humans call `browserctl`, then spawn navigator with the returned `env`.
+Thin human + agent CLI for **browser session leases**, **named profile lookup**, and the
+**orchestrator-only navigator lifecycle** seam.
+
+Navigators do **not** allocate raw CDP/profile resources. Fresh orchestrators should use the
+resource-oriented pair below — they do **not** hand-join lease/env/agent-ctl/watch primitives:
+
+```bash
+./bin/browserctl navigator spawn  --kind scratch --label demo --owner orch --json
+# … orchestrator dispatches work via herdr-agent-ctl run --target <run_target> …
+./bin/browserctl navigator cleanup --lease "$LEASE" --json   # safe in finally
+```
 
 `identity_ops.py` remains **canonical** for xAI coal bind/start/stop.  
 `browserctl` adapters wrap it (and scratch/vpn) behind one lease plane.
@@ -30,9 +39,12 @@ Always safe for agents: add `--json`.
 | `release --lease ID` | stop resources; idempotent |
 | `watch --lease ID [--agent-pane P]` | split navigator pane → observe_mirror |
 | `unwatch --lease ID` | close watch pane; keep lease |
-| `reap` / `reap --lease ID` | crash-backstop cleanup for **auto-reap-eligible** expired leases; `--lease` force |
-| `mark-exit --lease ID` | navigator exited without release → expiring (auto-reap eligible) |
-| `launch` / `spawn` | acquire (+ optional `--watch`) → navigator env JSON |
+| `reap` / `reap --lease ID` | crash-backstop cleanup for auto-reap-eligible expired leases; `--lease` force |
+| `mark-exit --lease ID` | low-level: mark a vanished navigator lease expiring |
+| `launch` / `spawn` | low-level acquire (+ optional `--watch`) → env contract JSON only (no pane) |
+| **`navigator spawn`** | **orchestrator:** lease + navigator pane + binding + optional watch → one receipt |
+| **`navigator cleanup`** | **orchestrator:** close navigator + prove watch closed + release; idempotent/finally-safe |
+| `navigator status` | lease↔navigator binding lookup |
 | `launch\|acquire --profile NAME` | exact named-profile lookup → launch selector (+ lease stamp) |
 | `profiles list` | named profiles in `profiles/PROFILES.json` |
 | `profiles show <name>` | one profile (launch + associations) |
@@ -40,9 +52,59 @@ Always safe for agents: add `--json`.
 | `profiles associate <name> <site> [account]` | site/account → profile |
 | `profiles resolve <site> [--account …]` | exact resolve → `launch` + `launch_argv` |
 
+### Orchestrator navigator lifecycle (preferred)
+
+Resource-oriented pair. Navigators are only used through orchestrators. Do **not**
+require callers to remember cleanup law or stitch `launch` + `herdr-agent-ctl` +
+`watch` + `release` by hand.
+
+```bash
+# Requires ambient orchestrator herdr: HERDR_SOCKET_PATH + HERDR_PANE_ID
+# Optional: BROWSERCTL_HERDR_AGENT_CTL=/path/to/herdr-agent-ctl
+
+out=$(./bin/browserctl navigator spawn \
+  --kind scratch --label demo --owner orch \
+  --mode one_shot \
+  --name nav-demo \
+  --watch \
+  --herdr-socket "$HERDR_SOCKET_PATH" \
+  --json)
+
+lease=$(jq -r .lease_id <<<"$out")
+target=$(jq -r .next.run_target <<<"$out")   # pane_id for herdr-agent-ctl run
+
+# normal task dispatch (orchestrator substrate — not browserctl):
+# herdr-agent-ctl run --target "$target" --prompt '…' --json
+
+# always in finally — idempotent; exit 1 when settlement incomplete (retryable)
+./bin/browserctl navigator cleanup --lease "$lease" --json
+# or: ./bin/browserctl navigator cleanup --name nav-demo --json
+```
+
+| Step | Ownership |
+|---|---|
+| `navigator spawn` | acquire lease → pass **exact** spawn-contract env into `herdr-agent-ctl spawn --profile navigator` → persist lease↔navigator binding → optional watch **after** navigator pane exists → one receipt |
+| between | orchestrator runs task via `next.run_target` (herdr-agent-ctl `run`) |
+| `navigator cleanup` | close navigator (agent-ctl) + **prove** pane gone → prove watch closed → release lease → clear binding |
+
+**Finite jobs / crash backstop:** use `--mode one_shot` (always auto-reap eligible) or `--auto-reap` on persistent leases so scheduled `browserctl reap` can collect orphans if the orchestrator dies. Normal path remains `navigator cleanup` in `finally`. Receipt stamps `lease.auto_reap_eligible`. (Timer packaging lives in main `774d476` — cherry-pick/rebase that commit alongside this seam.)
+
+**Receipt fields (spawn):** `lease_id`, `env`, `navigator.{name,pane_id,workspace_id,tab_id}`, `binding`, `watch?`, `lease.{mode,auto_reap,auto_reap_eligible}`, `next.{run_target,cleanup,status,note}`.
+
+**Cleanup proof:** `proof.navigator_close`, `proof.navigator_pane`, `proof.watch_stop`, `proof.release`, `settled`, `retryable`. Fail closed when navigator ownership is uncertain (pane still present) — lease is **not** released unless `--force`. Incomplete watch close keeps release **retryable** (binding retained).
+
+**Binding store:** `state/control/navigator-bindings/<lease_id>.json` (runtime, no secrets).
+
+`launch` / `spawn` remain available for env-contract-only flows; prefer `navigator spawn` when a navigator pane is required.
+
 ### Scratch (demo / ad-hoc)
 
 ```bash
+# Preferred (orchestrator):
+./bin/browserctl navigator spawn --kind scratch --label demo --owner orch --json
+./bin/browserctl navigator cleanup --lease "$LEASE" --json
+
+# Env-contract only (no navigator pane):
 ./bin/browserctl launch --kind scratch --label demo --owner orch --json
 ./bin/browserctl watch --lease "$LEASE" --agent-pane "$HERDR_PANE_ID" \
   --herdr-socket "$HERDR_SOCKET_PATH" --json
@@ -245,12 +307,14 @@ herdr `pane split --direction right --ratio R` keeps the **agent pane as first c
 
 | Action | Effect |
 |---|---|
-| `unwatch --lease ID` | close watch pane; clear `lease.watch`; **keep** mutation lease |
-| `unwatch --keep-pane` | unbind only; leave pane open |
-| `release --lease ID` | stop adapter + **close watch pane** (unless `--keep-watch`) |
-| `reap` | same release path for **auto-reap-eligible** expired leases / force ids |
+| **`navigator cleanup --lease ID\|--name N`** | **preferred:** settle navigator pane + prove watch closed + release lease |
+| `unwatch --lease ID` | low-level: close watch with evidence; keep mutation lease |
+| `release --lease ID` | low-level: stop adapter + close watch; unconfirmed close stays retryable |
+| `reap` | platform crash backstop for auto-reap-eligible expired leases / forced ids |
 
-Orchestrator owns cleanup: always `unwatch` or `release` in `finally`. Do not leave orphan observe_mirror panes. Scheduled `reap` is only a **crash backstop** (see below).
+**Pane closure truth:** `closed=true` is returned only with absence evidence. Unconfirmed watch closure keeps the lease retryable.
+
+Fresh orchestrators use `navigator cleanup` in `finally`; they do not sequence unwatch, release, mark-exit, or reap.
 
 ### herdr endpoint (required — fail closed)
 
@@ -295,6 +359,12 @@ herdr pane split <agent-pane> --direction right --ratio 0.37 …
 ---
 
 ## State layout
+
+Navigator bindings (orchestrator lifecycle) live under the control plane:
+
+```text
+state/control/navigator-bindings/<lease_id>.json
+```
 
 ```text
 state/control/
