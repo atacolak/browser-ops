@@ -354,37 +354,6 @@ def cmd_profiles_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_viewport_flags(
-    p: argparse.ArgumentParser,
-    *,
-    with_watch_prefix: bool = False,
-) -> None:
-    """Shared --viewport / size flags for watch and launch --watch."""
-    prefix = "with --watch: " if with_watch_prefix else ""
-    p.add_argument(
-        "--viewport",
-        default=None,
-        choices=["fixed", "follow-pane", "preserve"],
-        help=(
-            f"{prefix}observe_mirror layout policy "
-            "(default fixed → HERDR_BROWSER_VIEWPORT_MODE=fixed at 1150x902; "
-            "follow-pane reflows page with terminal; preserve never mutates)"
-        ),
-    )
-    p.add_argument(
-        "--viewport-width",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed mode width override (default 1150)",
-    )
-    p.add_argument(
-        "--viewport-height",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed mode height override (default 902)",
-    )
-
-
 def _add_launch_selector_flags(
     p: argparse.ArgumentParser,
     *,
@@ -421,6 +390,40 @@ def _add_profile_flag(p: argparse.ArgumentParser) -> None:
         default=None,
         metavar="NAME",
         help="named profile (profiles show); exclusive with selector flags",
+    )
+
+
+def _add_viewport_flags(
+    p: argparse.ArgumentParser,
+    *,
+    with_watch_prefix: bool = False,
+) -> None:
+    """Shared --viewport / size flags for watch, launch --watch, navigator spawn.
+
+    Normalization lives in browserctl.watch. This only collects CLI values.
+    """
+    prefix = "with --watch: " if with_watch_prefix else ""
+    p.add_argument(
+        "--viewport",
+        default=None,
+        choices=["fixed", "follow-pane", "preserve"],
+        help=(
+            f"{prefix}observe_mirror layout policy "
+            "(default fixed → HERDR_BROWSER_VIEWPORT_MODE=fixed at 1150x902; "
+            "follow-pane reflows page with terminal; preserve never mutates)"
+        ),
+    )
+    p.add_argument(
+        "--viewport-width",
+        type=int,
+        default=None,
+        help=f"{prefix}fixed mode width override (default 1150)",
+    )
+    p.add_argument(
+        "--viewport-height",
+        type=int,
+        default=None,
+        help=f"{prefix}fixed mode height override (default 902)",
     )
 
 
@@ -625,8 +628,8 @@ def build_parser() -> argparse.ArgumentParser:
     nsp = nsub.add_parser(
         "spawn",
         help=(
-            "acquire lease, spawn navigator via herdr-agent-ctl with exact env, "
-            "persist binding, optional watch; one structured receipt"
+            "dedicated tab (default) + lease + navigator via herdr-agent-ctl "
+            "(split=none) + binding + optional watch; one structured receipt"
         ),
         parents=[shared],
     )
@@ -668,9 +671,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     nsp.add_argument(
         "--split",
-        default="right",
+        default="none",
         choices=["none", "right", "down"],
-        help="herdr-agent-ctl pane placement (default right)",
+        help=(
+            "herdr-agent-ctl pane placement (default none). "
+            "Default topology auto-creates a dedicated tab and requires none; "
+            "non-none only with explicit --tab (advanced, geometry not guaranteed)"
+        ),
     )
     nsp.add_argument(
         "--navigator-lifecycle",
@@ -678,8 +685,21 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["one_shot", "persistent"],
         help="navigator agent lifecycle passed to herdr-agent-ctl",
     )
-    nsp.add_argument("--workspace", default=None, help="target workspace id")
-    nsp.add_argument("--tab", default=None, help="target tab id/label (needs --workspace)")
+    nsp.add_argument(
+        "--workspace",
+        default=None,
+        help="target workspace id (default: current/ambient workspace)",
+    )
+    nsp.add_argument(
+        "--tab",
+        default=None,
+        help=(
+            "advanced: use existing caller-owned tab (owns_tab=false). "
+            "Default omits --tab and creates a dedicated tab so navigator is "
+            "tab root at fullscreen ~1920x1080 (fixed viewport 1150x902 basis). "
+            "Exact default geometry is NOT guaranteed in an arbitrary occupied tab"
+        ),
+    )
     nsp.add_argument(
         "--agent-ctl",
         default=None,
@@ -715,8 +735,8 @@ def build_parser() -> argparse.ArgumentParser:
     ncl = nsub.add_parser(
         "cleanup",
         help=(
-            "close navigator + prove watch closed + release lease; "
-            "idempotent, safe for finally"
+            "close navigator + prove watch closed + close owned tab + "
+            "release lease; idempotent, safe for finally"
         ),
         parents=[shared],
     )
@@ -729,7 +749,11 @@ def build_parser() -> argparse.ArgumentParser:
     ncl.add_argument(
         "--force",
         action="store_true",
-        help="release browser even if navigator pane close is unconfirmed",
+        help=(
+            "if browser release completes: terminal forced settlement "
+            "(binding cleared, ok/settled true, navigator_unconfirmed warning) "
+            "even when navigator/owned-tab close lacks evidence"
+        ),
     )
     ncl.add_argument(
         "--keep-watch",

@@ -646,22 +646,51 @@ class Manager:
                 )
                 continue
             try:
-                result = self.release(
-                    lease_id=lease["lease_id"],
-                    force=True,
-                )
                 lid = lease["lease_id"]
-                # Only terminal-reap when release completed cleanup. Incomplete
-                # ephemeral wipes stay expiring/retryable for a later pass.
-                if result.get("retryable") or not result.get("ok", True):
-                    skipped.append(
-                        {
-                            "lease_id": lid,
-                            "reason": "release_incomplete",
-                            "release": result.get("release"),
-                        }
+                # Navigator-bound leases must settle pane/tab/binding via
+                # navigator cleanup (force). Avoid recursion: cleanup releases
+                # the browser; reap only orchestrates + stamps reaped.
+                from browserctl.navigator import load_binding
+
+                binding = load_binding(self.state_root, lid)
+                nav_meta = (lease.get("meta") or {}).get("navigator")
+                used_nav_cleanup = bool(binding or nav_meta)
+                if used_nav_cleanup:
+                    result = self.navigator_cleanup(
+                        lease_id=lid,
+                        force=True,
+                        _from_reap=True,
                     )
-                    continue
+                    if result.get("retryable") or not result.get("ok", True):
+                        skipped.append(
+                            {
+                                "lease_id": lid,
+                                "reason": "navigator_cleanup_incomplete",
+                                "cleanup": {
+                                    "ok": result.get("ok"),
+                                    "settled": result.get("settled"),
+                                    "forced": result.get("forced"),
+                                    "proof": result.get("proof"),
+                                },
+                            }
+                        )
+                        continue
+                else:
+                    result = self.release(
+                        lease_id=lid,
+                        force=True,
+                    )
+                    # Only terminal-reap when release completed cleanup. Incomplete
+                    # ephemeral wipes stay expiring/retryable for a later pass.
+                    if result.get("retryable") or not result.get("ok", True):
+                        skipped.append(
+                            {
+                                "lease_id": lid,
+                                "reason": "release_incomplete",
+                                "release": result.get("release"),
+                            }
+                        )
+                        continue
                 with worker_mutex(self.state_root, lease["worker_id"]):
                     cur = load_lease(self.state_root, lid)
                     if cur and cur.get("status") == "released":
@@ -669,8 +698,18 @@ class Manager:
                         cur["reaped_at"] = time.strftime(
                             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)
                         )
+                        if used_nav_cleanup:
+                            meta = dict(cur.get("meta") or {})
+                            meta["reaped_via"] = "navigator_cleanup"
+                            cur["meta"] = meta
                         save_lease(self.state_root, cur)
-                        reaped.append(_public_lease(cur))
+                        pub = _public_lease(cur)
+                        if used_nav_cleanup:
+                            pub["navigator_cleanup"] = {
+                                "forced": bool(result.get("forced")),
+                                "settled": bool(result.get("settled")),
+                            }
+                        reaped.append(pub)
                     elif cur:
                         skipped.append(
                             {
@@ -752,6 +791,7 @@ class Manager:
         force: bool = False,
         keep_watch: bool = False,
         skip_navigator_close: bool = False,
+        _from_reap: bool = False,
     ) -> dict[str, Any]:
         from browserctl.navigator import NavigatorLifecycle
 
@@ -761,6 +801,7 @@ class Manager:
             force=force,
             keep_watch=keep_watch,
             skip_navigator_close=skip_navigator_close,
+            _from_reap=_from_reap,
         )
 
     def navigator_status(
