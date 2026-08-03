@@ -87,7 +87,7 @@ target=$(jq -r .next.run_target <<<"$out")   # pane_id for herdr-agent-ctl run
 | between | orchestrator runs task via `next.run_target` (herdr-agent-ctl `run`) |
 | `navigator cleanup` | close navigator (agent-ctl) + **prove** pane gone → prove watch closed → release lease → clear binding |
 
-**Finite jobs / crash backstop:** use `--mode one_shot` (always auto-reap eligible) or `--auto-reap` on persistent leases so scheduled `browserctl reap` can collect orphans if the orchestrator dies. Normal path remains `navigator cleanup` in `finally`. Receipt stamps `lease.auto_reap_eligible`. (Timer packaging lives in main `774d476` — cherry-pick/rebase that commit alongside this seam.)
+**Finite jobs / crash backstop:** use `--mode one_shot` (always auto-reap eligible) or `--auto-reap` on persistent leases so scheduled `browserctl reap` can collect orphans if the orchestrator dies. Normal path remains `navigator cleanup` in `finally`. Receipt stamps `lease.auto_reap_eligible`; the repo-owned user timer is installed with `bin/browserctl-reap-timer`.
 
 **Receipt fields (spawn):** `lease_id`, `env`, `navigator.{name,pane_id,workspace_id,tab_id}`, `binding`, `watch?`, `lease.{mode,auto_reap,auto_reap_eligible}`, `next.{run_target,cleanup,status,note}`.
 
@@ -284,7 +284,7 @@ Optional size overrides (fixed only): `--viewport-width` / `--viewport-height`.
   --herdr-socket "$HERDR_SOCKET_PATH" --json
 ```
 
-Manager/API: `Manager.watch(..., viewport=, viewport_width=, viewport_height=)` and launch request keys `viewport` / `viewport_width` / `viewport_height` (for lifecycle `navigator spawn` integration later).
+Manager/API: `Manager.watch(..., viewport=, viewport_width=, viewport_height=)`; `navigator spawn` forwards the same viewport options when `--watch` is requested.
 
 ### Split ratio (herdr first-child fraction)
 
@@ -393,8 +393,8 @@ Daemon publishes on connect / navigation / tab switch. Seq increments locked (mo
 
 | mode | TTL default | Who releases | Scheduled `reap` after `expires_at` |
 |---|---|---|---|
-| `persistent` (default) | 1h | orchestrator `release` | **no** (unless `--auto-reap` or status `expiring`) |
-| `one_shot` | 15m | orchestrator `release` in `finally` | **yes** (crash backstop) |
+| `persistent` (default) | 1h | `navigator cleanup` | **no** (unless `--auto-reap` or status `expiring`) |
+| `one_shot` | 15m | `navigator cleanup` in `finally` | **yes** (crash backstop) |
 
 `expires_at` on persistent leases is observability / conflict messaging, **not** permission for the timer to kill the session. Live lab sessions often intentionally outlive the default 1h stamp.
 
