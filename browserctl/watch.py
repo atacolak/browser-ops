@@ -18,6 +18,20 @@ Viewer live stream:
   enters the resize/graphics-stream loop (otherwise daemon metrics stay
   graphics_stream.active=false / frames=0).
 
+Viewport modes (CLI --viewport → HERDR_BROWSER_VIEWPORT_MODE):
+  fixed (default): lock real page layout once to DEFAULT_VIEWPORT_WIDTH x
+    DEFAULT_VIEWPORT_HEIGHT (1150x902 — measured fullscreen 1920x1080 herdr
+    37/63 browser pane). Sets HERDR_BROWSER_VIEWPORT_MODE=fixed plus
+    HERDR_BROWSER_VIEWPORT_WIDTH/HEIGHT. herdr-browser applies
+    Emulation.setDeviceMetricsOverride at that size on attach and does not
+    derive new dims from terminal resize; pane resize contain-fits/scales
+    the rendered frame only.
+  follow-pane: HERDR_BROWSER_VIEWPORT_MODE=follow-pane (+ legacy
+    HERDR_BROWSER_FOLLOW_PANE_VIEWPORT=1). Terminal/pane size reflows the
+    page each resize (previous default behavior).
+  preserve: HERDR_BROWSER_VIEWPORT_MODE=preserve — never mutate layout
+    (debug/forensic; not the navigator default).
+
 Viewer root (prefer/require observe_mirror capability), first match wins:
   1. HERDR_BROWSER_ROOT env
   2. BROWSERCTL_VIEWER_ROOT env
@@ -64,6 +78,13 @@ from browserctl.paths import (
 # leaving enough transcript width for useful navigator observation.
 DEFAULT_RATIO = 0.37
 VIEWER_ROOT_FILENAME = "viewer-root"
+
+# Fixed default layout viewport: measured browser-pane CSS size at fullscreen
+# 1920x1080 with the default herdr 37/63 split (agent left / browser right).
+DEFAULT_VIEWPORT_MODE = "fixed"
+DEFAULT_VIEWPORT_WIDTH = 1150
+DEFAULT_VIEWPORT_HEIGHT = 902
+VIEWPORT_MODES = frozenset({"fixed", "follow-pane", "preserve"})
 
 # Bounded cold-start wait before failing watch with diagnostics.
 DEFAULT_READY_TIMEOUT_S = 20.0
@@ -606,28 +627,95 @@ def wait_for_viewer_process(
     )
 
 
+def normalize_viewport_mode(mode: str | None) -> str:
+    """Accept fixed|follow-pane|preserve; default fixed."""
+    if mode is None or str(mode).strip() == "":
+        return DEFAULT_VIEWPORT_MODE
+    value = str(mode).strip().lower().replace("_", "-")
+    # Aliases from earlier flag naming / boolean follow opt-in.
+    if value in ("follow", "follow-pane-viewport", "dynamic", "pane"):
+        value = "follow-pane"
+    if value in ("forensic", "readonly-layout", "keep"):
+        value = "preserve"
+    if value not in VIEWPORT_MODES:
+        raise InvalidRequest(
+            f"viewport must be one of {sorted(VIEWPORT_MODES)} (got {mode!r})",
+            viewport=mode,
+        )
+    return value
+
+
+def normalize_viewport_dim(value: int | float | str | None, *, name: str) -> int | None:
+    """Optional positive int override for fixed viewport width/height."""
+    if value is None or value == "":
+        return None
+    try:
+        dim = int(value)
+    except (TypeError, ValueError) as e:
+        raise InvalidRequest(f"invalid {name}: {value!r}") from e
+    if dim <= 0:
+        raise InvalidRequest(f"{name} must be a positive integer (got {dim})")
+    return dim
+
+
 def build_mirror_env(
     *,
     cdp_url: str,
     target_state_path: str | Path,
     viewer_root: Path | str | None = None,
+    viewport: str | None = None,
+    viewport_width: int | float | str | None = None,
+    viewport_height: int | float | str | None = None,
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    env = {
+    """
+    Env for observe_mirror watch panes.
+
+    Default viewport=fixed → HERDR_BROWSER_VIEWPORT_MODE=fixed with
+    WIDTH/HEIGHT 1150x902 so herdr-browser applies device metrics once and
+    keeps layout stable while WATCH_RESIZE contain-fits the frame on pane
+    resize. follow-pane omits fixed dims, sets MODE=follow-pane and legacy
+    FOLLOW_PANE_VIEWPORT=1 so the page reflows with the terminal. preserve
+    never mutates layout. WATCH_RESIZE stays on in all modes for the graphics
+    stream loop.
+    """
+    mode = normalize_viewport_mode(viewport)
+    width = normalize_viewport_dim(viewport_width, name="viewport_width")
+    height = normalize_viewport_dim(viewport_height, name="viewport_height")
+    if mode != "fixed" and (width is not None or height is not None):
+        raise InvalidRequest(
+            "viewport-width/height only apply to --viewport fixed",
+            viewport=mode,
+            viewport_width=width,
+            viewport_height=height,
+        )
+    if mode == "fixed":
+        width = width if width is not None else DEFAULT_VIEWPORT_WIDTH
+        height = height if height is not None else DEFAULT_VIEWPORT_HEIGHT
+
+    env: dict[str, str] = {
         "HERDR_BROWSER_MODE": "observe_mirror",
         "HERDR_BROWSER_TARGET_STATE": str(target_state_path),
         "HERDR_BROWSER_CDP_URL": str(cdp_url).rstrip("/"),
-        # Bound frames to the pane raster. Unbounded screenshots preserve the
+        # Bound frames to the capture raster. Unbounded screenshots preserve the
         # external browser's larger viewport and Herdr clips them on small panes.
         "HERDR_BROWSER_CAPTURE_BACKEND": "screencast",
         "HERDR_BROWSER_CAPTURE_SCALE": "1",
-        # Read-only input remains enforced; only page layout follows pane size.
-        "HERDR_BROWSER_FOLLOW_PANE_VIEWPORT": "1",
+        # Canonical viewport policy consumed by herdr-browser observe_mirror.
+        "HERDR_BROWSER_VIEWPORT_MODE": mode,
         # Required for live resize + graphics stream loop in herdr-browser
         # viewer (shouldWatchResize). Without this, daemon metrics stay
         # graphics_stream.active=false / frames=0 after a one-shot render.
+        # Placement contain-fits; layout mutation is governed by VIEWPORT_MODE.
         "HERDR_BROWSER_VIEWER_WATCH_RESIZE": "1",
     }
+    if mode == "fixed":
+        env["HERDR_BROWSER_VIEWPORT_WIDTH"] = str(width)
+        env["HERDR_BROWSER_VIEWPORT_HEIGHT"] = str(height)
+    elif mode == "follow-pane":
+        # Legacy companion flag: older herdr-browser builds only understood
+        # FOLLOW_PANE_VIEWPORT. New builds prefer VIEWPORT_MODE=follow-pane.
+        env["HERDR_BROWSER_FOLLOW_PANE_VIEWPORT"] = "1"
     if viewer_root is not None:
         env["HERDR_BROWSER_ROOT"] = str(viewer_root)
     if extra:
@@ -947,15 +1035,19 @@ def start_watch(
     herdr_socket: str | None = None,
     ready_timeout_s: float = DEFAULT_READY_TIMEOUT_S,
     ready_poll_s: float = DEFAULT_READY_POLL_S,
+    viewport: str | None = None,
+    viewport_width: int | float | str | None = None,
+    viewport_height: int | float | str | None = None,
 ) -> dict[str, Any]:
     """
     Split the navigator's existing pane and run observe_mirror viewer.
 
     Waits for CDP + non-null active_target_id present in /json/list before
     splitting. Sets HERDR_BROWSER_VIEWER_WATCH_RESIZE=1 on the mirror pane.
-    Verifies the viewer process started; closes the new pane on failure.
-    Never seeds a null target stub. Binds watch pane ids + herdr endpoint onto
-    the returned watch record.
+    Default viewport=fixed locks layout at 1150x902; follow-pane reflows with
+    the terminal. Verifies the viewer process started; closes the new pane on
+    failure. Never seeds a null target stub. Binds watch pane ids + herdr
+    endpoint onto the returned watch record.
     """
     resources = lease.get("resources") or {}
     worker_id = lease.get("worker_id")
@@ -998,10 +1090,16 @@ def start_watch(
             probe=probe,
         )
 
+    viewport_mode = normalize_viewport_mode(viewport)
+    fixed_width = normalize_viewport_dim(viewport_width, name="viewport_width")
+    fixed_height = normalize_viewport_dim(viewport_height, name="viewport_height")
     mirror_env = build_mirror_env(
         cdp_url=cdp_url,
         target_state_path=target_path,
         viewer_root=viewer_cwd,
+        viewport=viewport_mode,
+        viewport_width=fixed_width,
+        viewport_height=fixed_height,
     )
     # Keep herdr socket in pane env so child tools hit the same server
     if endpoint.get("herdr_socket"):
@@ -1037,11 +1135,21 @@ def start_watch(
             **(e.details or {}),
         ) from e
 
+    viewport_meta: dict[str, Any] = {"mode": viewport_mode}
+    if viewport_mode == "fixed":
+        viewport_meta["width"] = int(
+            mirror_env.get("HERDR_BROWSER_VIEWPORT_WIDTH", DEFAULT_VIEWPORT_WIDTH)
+        )
+        viewport_meta["height"] = int(
+            mirror_env.get("HERDR_BROWSER_VIEWPORT_HEIGHT", DEFAULT_VIEWPORT_HEIGHT)
+        )
+
     return {
         "agent_pane_id": agent,
         "watch_pane_id": watch_pane,
         "direction": direction,
         "ratio": ratio,
+        "viewport": viewport_meta,
         "viewer_cwd": str(viewer_cwd),
         "viewer_command": cmd,
         "viewer_probe": {

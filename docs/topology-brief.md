@@ -105,7 +105,7 @@ wipe is strict: marker required, processes dead, paths contained under profiles/
 ## watch / herdr mirror laws
 - watch waits for: cdp `/json/version` + non-null `active_target_id` + id present in `/json/list`
 - NEVER seed null active-target (permanent about:blank death)
-- viewer: observe_mirror, bounded 1:1 screencast, `FOLLOW_PANE_VIEWPORT=1`, `VIEWER_WATCH_RESIZE=1`, input read-only
+- viewer: observe_mirror, bounded 1:1 screencast, `VIEWPORT_MODE=fixed` + 1150×902 by default (opt-in `follow-pane`), `VIEWER_WATCH_RESIZE=1`, input read-only
 - default split ratio 0.37 → agent left ~37%, browser right ~63%
 - exact herdr socket required (fail closed if ambiguous)
 - viewer root resolution: HERDR_BROWSER_ROOT → BROWSERCTL_VIEWER_ROOT → state/control/viewer-root

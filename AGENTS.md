@@ -98,7 +98,7 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 
 1. Wait for CDP `/json/version`, non-null `active_target_id`, **and** that id in CDP `/json/list` before splitting (bounded; default 20s).
 2. **Never** seed a null active-target stub (that freezes observe_mirror on `about:blank`).
-3. Watch pane env must set bounded 1:1 screencast, `HERDR_BROWSER_FOLLOW_PANE_VIEWPORT=1`, and `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1`; input remains read-only while the page reflows to pane size.
+3. Watch pane env must set bounded 1:1 screencast and `HERDR_BROWSER_VIEWER_WATCH_RESIZE=1`. Default viewport is **fixed** 1150×902 (`HERDR_BROWSER_VIEWPORT_MODE=fixed` + width/height) so pane resize scales the frame without reflowing page layout. Opt-in `--viewport follow-pane` sets `VIEWPORT_MODE=follow-pane` and legacy `FOLLOW_PANE_VIEWPORT=1` for dynamic reflow. Input stays read-only in all modes.
 4. After pane run, verify viewer process started; on failure close the newly split pane.
 5. Default split ratio **0.37** (herdr first-child = agent left 37%, browser right 63%). `--ratio` overrides.
 6. Exact herdr endpoint (`--herdr-socket` / `HERDR_SOCKET_PATH`) required — fail closed if ambiguous.

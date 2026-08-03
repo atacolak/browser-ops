@@ -126,6 +126,9 @@ def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = Fa
         req["ready_timeout"] = getattr(args, "ready_timeout", None)
         req["herdr_session"] = getattr(args, "herdr_session", None)
         req["herdr_socket"] = getattr(args, "herdr_socket", None)
+        req["viewport"] = getattr(args, "viewport", None)
+        req["viewport_width"] = getattr(args, "viewport_width", None)
+        req["viewport_height"] = getattr(args, "viewport_height", None)
     return req
 
 
@@ -171,6 +174,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         herdr_session=args.herdr_session,
         herdr_socket=args.herdr_socket,
         ready_timeout_s=getattr(args, "ready_timeout", None),
+        viewport=getattr(args, "viewport", None),
+        viewport_width=getattr(args, "viewport_width", None),
+        viewport_height=getattr(args, "viewport_height", None),
     )
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
@@ -288,6 +294,37 @@ def cmd_profiles_resolve(args: argparse.Namespace) -> int:
         print(f"launch: {' '.join(out['launch_argv'])}")
         print(json.dumps({"launch": out["launch"]}, indent=2, sort_keys=True, default=str))
     return 0
+
+
+def _add_viewport_flags(
+    p: argparse.ArgumentParser,
+    *,
+    with_watch_prefix: bool = False,
+) -> None:
+    """Shared --viewport / size flags for watch and launch --watch."""
+    prefix = "with --watch: " if with_watch_prefix else ""
+    p.add_argument(
+        "--viewport",
+        default=None,
+        choices=["fixed", "follow-pane", "preserve"],
+        help=(
+            f"{prefix}observe_mirror layout policy "
+            "(default fixed → HERDR_BROWSER_VIEWPORT_MODE=fixed at 1150x902; "
+            "follow-pane reflows page with terminal; preserve never mutates)"
+        ),
+    )
+    p.add_argument(
+        "--viewport-width",
+        type=int,
+        default=None,
+        help=f"{prefix}fixed mode width override (default 1150)",
+    )
+    p.add_argument(
+        "--viewport-height",
+        type=int,
+        default=None,
+        help=f"{prefix}fixed mode height override (default 902)",
+    )
 
 
 def _add_launch_selector_flags(
@@ -424,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="right",
         choices=["right", "down"],
     )
+    _add_viewport_flags(w)
     w.set_defaults(func=cmd_watch)
 
     uw = sub.add_parser(
@@ -508,6 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="with --watch: readiness wait seconds (default 20)",
         )
+        _add_viewport_flags(lp, with_watch_prefix=True)
         lp.set_defaults(func=cmd_launch)
 
     # profiles <subcommand>

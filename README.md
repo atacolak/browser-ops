@@ -68,7 +68,7 @@ python3 identity_ops.py stage-get --email 'USER@host' --json
 
 ### Watch / observe_mirror
 
-`browserctl watch` waits for CDP + non-null `active_target_id` present in `/json/list` (no null stub / permanent `about:blank`), uses bounded 1:1 screencast plus read-only pane-follow viewport reflow, verifies the viewer process started (closes the new pane on failure), then keeps the split. Default ratio **agent 37% / browser 63%** (`--ratio` overrides). `release`/`unwatch` clean up the pane.
+`browserctl watch` waits for CDP + non-null `active_target_id` present in `/json/list` (no null stub / permanent `about:blank`), uses bounded 1:1 screencast with default **fixed** layout viewport 1150×902 (pane resize scales the frame; page layout stays stable), verifies the viewer process started (closes the new pane on failure), then keeps the split. Opt-in `--viewport follow-pane` restores dynamic page reflow. Default ratio **agent 37% / browser 63%** (`--ratio` overrides). `release`/`unwatch` clean up the pane.
 
 Viewer root (fail closed), first capable match:
 

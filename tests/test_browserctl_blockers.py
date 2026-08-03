@@ -743,7 +743,16 @@ def test_start_watch_waits_then_splits(tmp_path: Path, monkeypatch):
     assert rec["env"]["HERDR_BROWSER_MODE"] == "observe_mirror"
     assert rec["env"]["HERDR_BROWSER_CDP_URL"] == cdp_url
     assert rec["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+    # default fixed viewport contract
+    assert rec["viewport"]["mode"] == "fixed"
+    assert rec["viewport"]["width"] == 1150
+    assert rec["viewport"]["height"] == 902
+    assert rec["env"]["HERDR_BROWSER_VIEWPORT_MODE"] == "fixed"
+    assert rec["env"]["HERDR_BROWSER_VIEWPORT_WIDTH"] == "1150"
+    assert rec["env"]["HERDR_BROWSER_VIEWPORT_HEIGHT"] == "902"
+    assert "HERDR_BROWSER_FOLLOW_PANE_VIEWPORT" not in rec["env"]
     assert split_calls[0]["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+    assert split_calls[0]["env"]["HERDR_BROWSER_VIEWPORT_MODE"] == "fixed"
     assert rec["viewer_start"]["ok"] is True
     assert rec["viewer_start"]["matched"] == ["viewer.ts"]
 
@@ -759,8 +768,25 @@ def test_start_watch_waits_then_splits(tmp_path: Path, monkeypatch):
     )
     assert rec2["ratio"] == 0.4
 
+    # opt-in follow-pane
+    rec3 = watch_mod.start_watch(
+        lease,
+        state_root=state,
+        agent_pane="w1:agent",
+        herdr_socket="/tmp/watch-live.sock",
+        viewport="follow-pane",
+        ready_timeout_s=2.0,
+        ready_poll_s=0.01,
+    )
+    assert rec3["viewport"]["mode"] == "follow-pane"
+    assert rec3["env"]["HERDR_BROWSER_VIEWPORT_MODE"] == "follow-pane"
+    assert rec3["env"]["HERDR_BROWSER_FOLLOW_PANE_VIEWPORT"] == "1"
+    assert "HERDR_BROWSER_VIEWPORT_WIDTH" not in rec3["env"]
+    assert "HERDR_BROWSER_VIEWPORT_HEIGHT" not in rec3["env"]
+    assert rec3["env"]["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
 
-def test_build_mirror_env_sets_watch_resize(tmp_path: Path):
+
+def test_build_mirror_env_default_fixed_viewport(tmp_path: Path):
     env = watch_mod.build_mirror_env(
         cdp_url="http://127.0.0.1:9333",
         target_state_path=tmp_path / "active-target.json",
@@ -769,11 +795,70 @@ def test_build_mirror_env_sets_watch_resize(tmp_path: Path):
     assert env["HERDR_BROWSER_MODE"] == "observe_mirror"
     assert env["HERDR_BROWSER_CAPTURE_BACKEND"] == "screencast"
     assert env["HERDR_BROWSER_CAPTURE_SCALE"] == "1"
-    assert env["HERDR_BROWSER_FOLLOW_PANE_VIEWPORT"] == "1"
+    assert env["HERDR_BROWSER_VIEWPORT_MODE"] == "fixed"
+    assert env["HERDR_BROWSER_VIEWPORT_WIDTH"] == "1150"
+    assert env["HERDR_BROWSER_VIEWPORT_HEIGHT"] == "902"
+    assert "HERDR_BROWSER_FOLLOW_PANE_VIEWPORT" not in env
     assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
     assert env["HERDR_BROWSER_CDP_URL"] == "http://127.0.0.1:9333"
     assert env["HERDR_BROWSER_TARGET_STATE"] == str(tmp_path / "active-target.json")
     assert env["HERDR_BROWSER_ROOT"] == str(tmp_path / "viewer")
+
+
+def test_build_mirror_env_follow_pane_opt_in(tmp_path: Path):
+    env = watch_mod.build_mirror_env(
+        cdp_url="http://127.0.0.1:9333",
+        target_state_path=tmp_path / "active-target.json",
+        viewport="follow-pane",
+    )
+    assert env["HERDR_BROWSER_VIEWPORT_MODE"] == "follow-pane"
+    assert env["HERDR_BROWSER_FOLLOW_PANE_VIEWPORT"] == "1"
+    assert "HERDR_BROWSER_VIEWPORT_WIDTH" not in env
+    assert "HERDR_BROWSER_VIEWPORT_HEIGHT" not in env
+    assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+
+
+def test_build_mirror_env_preserve_mode(tmp_path: Path):
+    env = watch_mod.build_mirror_env(
+        cdp_url="http://127.0.0.1:9333",
+        target_state_path=tmp_path / "active-target.json",
+        viewport="preserve",
+    )
+    assert env["HERDR_BROWSER_VIEWPORT_MODE"] == "preserve"
+    assert "HERDR_BROWSER_FOLLOW_PANE_VIEWPORT" not in env
+    assert "HERDR_BROWSER_VIEWPORT_WIDTH" not in env
+    assert env["HERDR_BROWSER_VIEWER_WATCH_RESIZE"] == "1"
+
+
+def test_build_mirror_env_fixed_size_override(tmp_path: Path):
+    env = watch_mod.build_mirror_env(
+        cdp_url="http://127.0.0.1:9333",
+        target_state_path=tmp_path / "active-target.json",
+        viewport="fixed",
+        viewport_width=1280,
+        viewport_height=720,
+    )
+    assert env["HERDR_BROWSER_VIEWPORT_MODE"] == "fixed"
+    assert env["HERDR_BROWSER_VIEWPORT_WIDTH"] == "1280"
+    assert env["HERDR_BROWSER_VIEWPORT_HEIGHT"] == "720"
+
+
+def test_build_mirror_env_rejects_size_outside_fixed(tmp_path: Path):
+    with pytest.raises(InvalidRequest):
+        watch_mod.build_mirror_env(
+            cdp_url="http://127.0.0.1:9333",
+            target_state_path=tmp_path / "active-target.json",
+            viewport="follow-pane",
+            viewport_width=800,
+        )
+
+
+def test_normalize_viewport_mode_aliases():
+    assert watch_mod.normalize_viewport_mode(None) == "fixed"
+    assert watch_mod.normalize_viewport_mode("fixed") == "fixed"
+    assert watch_mod.normalize_viewport_mode("follow_pane") == "follow-pane"
+    assert watch_mod.normalize_viewport_mode("follow") == "follow-pane"
+    assert watch_mod.normalize_viewport_mode("preserve") == "preserve"
 
 
 def test_wait_for_watch_readiness_rejects_stale_target_not_in_list(

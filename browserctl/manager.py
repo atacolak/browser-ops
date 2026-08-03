@@ -421,6 +421,9 @@ class Manager:
         herdr_session: str | None = None,
         herdr_socket: str | None = None,
         ready_timeout_s: float | None = None,
+        viewport: str | None = None,
+        viewport_width: int | float | str | None = None,
+        viewport_height: int | float | str | None = None,
     ) -> dict[str, Any]:
         if lease_id:
             lease = require_lease(self.state_root, lease_id)
@@ -458,6 +461,9 @@ class Manager:
             direction=direction,
             herdr_session=herdr_session,
             herdr_socket=herdr_socket,
+            viewport=viewport,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
             **ready_kwargs,
         )
         lease = touch_lease(lease)
@@ -672,6 +678,9 @@ class Manager:
                     ready_timeout_s=(
                         float(ready_timeout) if ready_timeout is not None else None
                     ),
+                    viewport=request.get("viewport"),
+                    viewport_width=request.get("viewport_width"),
+                    viewport_height=request.get("viewport_height"),
                 )
                 result["watch"] = w.get("watch")
                 result["mirror_env"] = w.get("mirror_env")

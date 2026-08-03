@@ -151,7 +151,7 @@ Strict selector exclusion on resolve: account filter is exact; accountless resol
 5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` (status `expiring`). Scheduled TTL `reap` is a crash backstop for auto-reap-eligible leases only (`one_shot` / `expiring` / `--auto-reap`) — not default persistent sessions past 1h.
 6. **xAI conflict never kills the winner browser.**
 7. **Scratch CDP ports** under global `ports.lock` with retry.
-8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets live resize, bounded 1:1 screencast, and read-only pane-follow viewport reflow; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 37% / browser 63%.
+8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets live resize + bounded 1:1 screencast; default **fixed** layout viewport 1150×902 (`HERDR_BROWSER_VIEWPORT_MODE=fixed`) so pane resize scales the frame without reflowing page layout; opt-in `--viewport follow-pane` for dynamic reflow; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 37% / browser 63%.
 9. **Profile resolve** is deterministic; refuse ambiguity; emit-only (no acquire).
 10. **`--profile` launch** is exact name lookup; exclusive with selector flags; stamps `lease.profile_name` + `env.BROWSERCTL_PROFILE_NAME`.
 11. **Association learning** is explicit: after a successful login to a new site/account, run `profiles associate <name> <site> [account]` — never invent associations from URL heuristics.
@@ -188,12 +188,41 @@ Watch pane env always includes:
 | `HERDR_BROWSER_MODE` | `observe_mirror` | mirror contract |
 | `HERDR_BROWSER_TARGET_STATE` | active-target path | follow harness publish |
 | `HERDR_BROWSER_CDP_URL` | lease CDP | attach |
-| `HERDR_BROWSER_CAPTURE_BACKEND` | `screencast` | bound frames to pane pixels instead of clipping oversized screenshots |
-| `HERDR_BROWSER_CAPTURE_SCALE` | `1` | preserve 1:1 sharpness at the pane raster |
-| `HERDR_BROWSER_FOLLOW_PANE_VIEWPORT` | `1` | reflow page layout to the pane while input remains read-only |
+| `HERDR_BROWSER_CAPTURE_BACKEND` | `screencast` | bound frames to capture raster instead of clipping oversized screenshots |
+| `HERDR_BROWSER_CAPTURE_SCALE` | `1` | preserve 1:1 sharpness at the capture raster |
+| `HERDR_BROWSER_VIEWPORT_MODE` | `fixed` (default) / `follow-pane` / `preserve` | layout policy for herdr-browser observe_mirror |
+| `HERDR_BROWSER_VIEWPORT_WIDTH` | `1150` (fixed only) | real page layout width; measured fullscreen 1920×1080 herdr 37/63 browser pane |
+| `HERDR_BROWSER_VIEWPORT_HEIGHT` | `902` (fixed only) | real page layout height at that measurement |
+| `HERDR_BROWSER_FOLLOW_PANE_VIEWPORT` | `1` (**follow-pane only**) | legacy companion flag for older viewers; reflow page with terminal |
 | `HERDR_BROWSER_VIEWER_WATCH_RESIZE` | `1` | enter live resize/graphics-stream loop (`shouldWatchResize`); without it daemon metrics stay `graphics_stream.active=false` / `frames=0` |
 
 After `pane run`, watch polls herdr `pane process-info` (bounded ~3s) for `viewer.ts` / herdr-browser markers. Failure → close the newly split pane and raise `ADAPTER_ERROR` (`closed_on_failure=true`).
+
+### Viewport mode (page layout vs frame scale)
+
+| Mode | CLI | Env | Behavior |
+|---|---|---|---|
+| **fixed** (default) | `--viewport fixed` (or omit) | `VIEWPORT_MODE=fixed` + `WIDTH=1150` + `HEIGHT=902` | Apply real CSS layout once at 1150×902. Terminal/pane resize **contain-fits/scales** the rendered image; page responsive layout stays stable. |
+| **follow-pane** | `--viewport follow-pane` | `VIEWPORT_MODE=follow-pane` + legacy `FOLLOW_PANE_VIEWPORT=1` | Page layout reflows with pane size (previous default). |
+| **preserve** | `--viewport preserve` | `VIEWPORT_MODE=preserve` | Never mutate page layout (forensic/debug). |
+
+Optional size overrides (fixed only): `--viewport-width` / `--viewport-height`.
+
+```bash
+# default: fixed 1150x902 layout; frame scales on pane resize
+./bin/browserctl watch --lease "$LEASE" --agent-pane "$HERDR_PANE_ID" \
+  --herdr-socket "$HERDR_SOCKET_PATH" --json
+
+# opt-in dynamic page reflow
+./bin/browserctl watch --lease "$LEASE" --viewport follow-pane --json
+
+# launch/spawn with watch inherits the same flags
+./bin/browserctl launch --kind scratch --label demo --watch \
+  --viewport follow-pane --agent-pane "$HERDR_PANE_ID" \
+  --herdr-socket "$HERDR_SOCKET_PATH" --json
+```
+
+Manager/API: `Manager.watch(..., viewport=, viewport_width=, viewport_height=)` and launch request keys `viewport` / `viewport_width` / `viewport_height` (for lifecycle `navigator spawn` integration later).
 
 ### Split ratio (herdr first-child fraction)
 
