@@ -43,6 +43,7 @@ __all__ = [
     "find_active_lease_for_worker",
     "iter_leases",
     "is_expired",
+    "is_auto_reap_eligible",
     "touch_lease",
     "base_lease",
     "require_lease",
@@ -161,6 +162,34 @@ def is_expired(lease: dict[str, Any], *, now: float | None = None) -> bool:
         return float(exp) <= now
     except (TypeError, ValueError):
         return False
+
+
+def is_auto_reap_eligible(lease: dict[str, Any]) -> bool:
+    """Whether scheduled/TTL ``reap`` may release this lease when expired.
+
+    Persistent active leases keep a wall-clock ``expires_at`` for observability
+    and conflict messaging, but they are **not** automatic reaper targets.
+    Operators own ``release`` for those sessions (often intentionally past 1h).
+
+    Auto-reap only when the lease was intended for automatic expiration:
+
+    - ``mode == "one_shot"``
+    - ``status == "expiring"`` (mark-exit / incomplete release)
+    - explicit opt-in ``auto_reap: true`` (top-level; legacy ``meta.auto_reap``)
+
+    Forced ``reap --lease ID`` bypasses this gate.
+    """
+    status = str(lease.get("status") or "")
+    if status == "expiring":
+        return True
+    if str(lease.get("mode") or "") == "one_shot":
+        return True
+    if lease.get("auto_reap") is True:
+        return True
+    meta = lease.get("meta")
+    if isinstance(meta, dict) and meta.get("auto_reap") is True:
+        return True
+    return False
 
 
 def touch_lease(

@@ -114,6 +114,8 @@ def test_cli_list_and_reap(tmp_path, capsys):
                     "acquire",
                     "--kind",
                     "scratch",
+                    "--mode",
+                    "one_shot",
                     "--ttl",
                     "1",
                     "--no-start",

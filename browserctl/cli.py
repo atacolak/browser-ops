@@ -98,6 +98,8 @@ def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = Fa
         "mode": args.mode,
         "ttl": args.ttl,
     }
+    if getattr(args, "auto_reap", False):
+        req["auto_reap"] = True
     if getattr(args, "profile", None):
         req["profile_name"] = args.profile
     else:
@@ -355,9 +357,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         default="persistent",
         choices=["persistent", "one_shot"],
-        help="persistent: orchestrator releases; one_shot: shorter TTL",
+        help="persistent: orchestrator releases; one_shot: shorter TTL + auto-reap",
     )
     ac.add_argument("--ttl", type=float, default=None)
+    ac.add_argument(
+        "--auto-reap",
+        action="store_true",
+        help=(
+            "opt-in: allow scheduled reap after expires_at "
+            "(implied for --mode one_shot and mark-exit/expiring)"
+        ),
+    )
     ac.set_defaults(func=cmd_acquire)
 
     rel = sub.add_parser(
@@ -428,8 +438,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     uw.set_defaults(func=cmd_unwatch)
 
-    rp = sub.add_parser("reap", help="reap expired leases", parents=[shared])
-    rp.add_argument("--lease", help="force-reap one lease id")
+    rp = sub.add_parser(
+        "reap",
+        help=(
+            "reap expired auto-reap-eligible leases "
+            "(one_shot|expiring|auto_reap); --lease forces one id"
+        ),
+        parents=[shared],
+    )
+    rp.add_argument(
+        "--lease",
+        help="force-reap one lease id (bypasses auto-reap eligibility)",
+    )
     rp.add_argument("--dry-run", action="store_true")
     rp.set_defaults(func=cmd_reap)
 
@@ -457,6 +477,14 @@ def build_parser() -> argparse.ArgumentParser:
             choices=["persistent", "one_shot"],
         )
         lp.add_argument("--ttl", type=float, default=None)
+        lp.add_argument(
+            "--auto-reap",
+            action="store_true",
+            help=(
+                "opt-in: allow scheduled reap after expires_at "
+                "(implied for --mode one_shot and mark-exit/expiring)"
+            ),
+        )
         lp.add_argument(
             "--watch",
             action="store_true",

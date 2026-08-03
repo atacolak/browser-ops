@@ -1,0 +1,17 @@
+[Unit]
+Description=browserctl scheduled lease reaper (crash backstop)
+Documentation=file://@ROOT@/docs/browserctl.md
+After=default.target
+
+[Service]
+Type=oneshot
+# Absolute paths — non-interactive / root-safe invocation. Journal gets JSON.
+Environment=BROWSER_OPS_ROOT=@ROOT@
+WorkingDirectory=@ROOT@
+ExecStart=@ROOT@/bin/browserctl reap --json
+StandardOutput=journal
+StandardError=journal
+Nice=10
+
+[Install]
+WantedBy=default.target

@@ -110,7 +110,7 @@ lease=$(jq -r .lease.lease_id <<<"$out")
 2. **No managed `default`** for leased work.
 3. Control plane is atomic files under `state/control/` (no secrets).
 4. Harness publishes `state/<worker>/control/active-target.json` for mirrors.
-5. **Orchestrator owns the lease.** Release in `finally`.
+5. **Orchestrator owns the lease.** Release in `finally`. Scheduled `browserctl reap` is only a **crash backstop** for auto-reap-eligible leases (`one_shot`, `expiring`, or explicit `auto_reap`) — it does **not** kill default persistent sessions past the 1h TTL stamp. Timer units: `packaging/systemd/user/` + `./bin/browserctl-reap-timer install` (host admin opt-in; do not enable from agent tasks against live shared state).
 
 ---
 

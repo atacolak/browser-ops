@@ -22,6 +22,7 @@ from browserctl.store import (
     base_lease,
     delete_lease_record,
     find_active_lease_for_worker,
+    is_auto_reap_eligible,
     is_expired,
     iter_leases,
     load_lease,
@@ -303,6 +304,10 @@ class Manager:
             )
             if profile_name:
                 lease["profile_name"] = profile_name
+            # Opt-in scheduled reaper target for persistent leases (one_shot
+            # and expiring are always eligible; see is_auto_reap_eligible).
+            if req.get("auto_reap") is True:
+                lease["auto_reap"] = True
             Path(resources["target_state_path"]).parent.mkdir(
                 parents=True, exist_ok=True
             )
@@ -534,7 +539,13 @@ class Manager:
         now: float | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Reap expired leases (and optionally one forced id). Idempotent."""
+        """Reap expired auto-reap-eligible leases (or one forced id). Idempotent.
+
+        Crash backstop for orchestrator/navigator jobs that never reached
+        ``release`` — not the happy-path cleanup. Scheduled runs skip
+        default persistent active leases past wall-clock TTL; see
+        ``is_auto_reap_eligible``. ``force_lease_id`` bypasses that gate.
+        """
         now = now if now is not None else time.time()
         reaped: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -560,8 +571,23 @@ class Manager:
             for lease in iter_leases(self.state_root):
                 if lease.get("status") in ("released", "reaped"):
                     continue
-                if is_expired(lease, now=now):
-                    filtered.append(lease)
+                if not is_expired(lease, now=now):
+                    continue
+                # Scheduled reap must not kill intentionally long-lived
+                # persistent sessions that only aged past default 1h TTL.
+                if not is_auto_reap_eligible(lease):
+                    skipped.append(
+                        {
+                            "lease_id": lease.get("lease_id"),
+                            "worker_id": lease.get("worker_id"),
+                            "reason": "not_auto_reap_eligible",
+                            "mode": lease.get("mode"),
+                            "status": lease.get("status"),
+                            "auto_reap": bool(lease.get("auto_reap")),
+                        }
+                    )
+                    continue
+                filtered.append(lease)
 
         for lease in filtered:
             if dry_run:

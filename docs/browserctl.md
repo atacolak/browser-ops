@@ -30,8 +30,8 @@ Always safe for agents: add `--json`.
 | `release --lease ID` | stop resources; idempotent |
 | `watch --lease ID [--agent-pane P]` | split navigator pane → observe_mirror |
 | `unwatch --lease ID` | close watch pane; keep lease |
-| `reap` / `reap --lease ID` | TTL / force cleanup |
-| `mark-exit --lease ID` | navigator exited without release → expiring |
+| `reap` / `reap --lease ID` | crash-backstop cleanup for **auto-reap-eligible** expired leases; `--lease` force |
+| `mark-exit --lease ID` | navigator exited without release → expiring (auto-reap eligible) |
 | `launch` / `spawn` | acquire (+ optional `--watch`) → navigator env JSON |
 | `launch\|acquire --profile NAME` | exact named-profile lookup → launch selector (+ lease stamp) |
 | `profiles list` | named profiles in `profiles/PROFILES.json` |
@@ -148,7 +148,7 @@ Strict selector exclusion on resolve: account filter is exact; accountless resol
 2. **No managed `default`.** Coal and scratch refuse `default`.
 3. **Atomic control files** under `state/control/` (leases, index, worker locks, ports lock).
 4. **No secrets** in lease JSON, target-state, or `PROFILES.json`.
-5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` / TTL `reap`.
+5. **Orchestrator owns the lease.** `release` in `finally`. Navigator exit → `mark-exit` (status `expiring`). Scheduled TTL `reap` is a crash backstop for auto-reap-eligible leases only (`one_shot` / `expiring` / `--auto-reap`) — not default persistent sessions past 1h.
 6. **xAI conflict never kills the winner browser.**
 7. **Scratch CDP ports** under global `ports.lock` with retry.
 8. **Watch** requires exact herdr endpoint + observe_mirror-capable viewer root (fail closed); waits for CDP + non-null `active_target_id` present in `/json/list`; sets live resize, bounded 1:1 screencast, and read-only pane-follow viewport reflow; verifies viewer process then closes pane on failure; never seeds a null stub; default split ratio agent 37% / browser 63%.
@@ -219,9 +219,9 @@ herdr `pane split --direction right --ratio R` keeps the **agent pane as first c
 | `unwatch --lease ID` | close watch pane; clear `lease.watch`; **keep** mutation lease |
 | `unwatch --keep-pane` | unbind only; leave pane open |
 | `release --lease ID` | stop adapter + **close watch pane** (unless `--keep-watch`) |
-| `reap` | same release path for expired / force ids |
+| `reap` | same release path for **auto-reap-eligible** expired leases / force ids |
 
-Orchestrator owns cleanup: always `unwatch` or `release` in `finally`. Do not leave orphan observe_mirror panes.
+Orchestrator owns cleanup: always `unwatch` or `release` in `finally`. Do not leave orphan observe_mirror panes. Scheduled `reap` is only a **crash backstop** (see below).
 
 ### herdr endpoint (required — fail closed)
 
@@ -292,10 +292,64 @@ Daemon publishes on connect / navigation / tab switch. Seq increments locked (mo
 
 ## Persistent vs one-shot + scratch profile policy
 
-| mode | TTL default | Who releases |
-|---|---|---|
-| `persistent` | 1h | orchestrator `release` |
-| `one_shot` | 15m | same, shorter TTL |
+| mode | TTL default | Who releases | Scheduled `reap` after `expires_at` |
+|---|---|---|---|
+| `persistent` (default) | 1h | orchestrator `release` | **no** (unless `--auto-reap` or status `expiring`) |
+| `one_shot` | 15m | orchestrator `release` in `finally` | **yes** (crash backstop) |
+
+`expires_at` on persistent leases is observability / conflict messaging, **not** permission for the timer to kill the session. Live lab sessions often intentionally outlive the default 1h stamp.
+
+### Auto-reap eligibility (scheduled `reap` / timer)
+
+Blind TTL reap is unsafe: default `persistent` leases mark `expired` after 1h while still intentionally active. Scheduled `browserctl reap` only releases leases **intended** for automatic expiration:
+
+| Eligible | Not eligible |
+|---|---|
+| `mode=one_shot` | `mode=persistent` + `status=active` without opt-in |
+| `status=expiring` (`mark-exit`, incomplete wipe retry) | terminal `released` / `reaped` |
+| explicit `auto_reap: true` (CLI `--auto-reap`, or legacy `meta.auto_reap`) | |
+
+- `reap --lease ID` **force** still bypasses eligibility (operator scalpel).
+- `reap --dry-run` lists what would be released under the same gate.
+- Skipped ineligible expired leases appear in JSON `skipped[]` with `reason=not_auto_reap_eligible`.
+
+**Normal path (fresh orchestrator):** `launch|spawn` → work → `release` in `finally`. Prefer `--mode one_shot` for finite navigator jobs so a crash still leaves an eligible lease for the backstop timer. You do **not** need the timer for happy-path cleanup.
+
+**Crash backstop:** if the orchestrator dies without `release`, `one_shot` / `expiring` / `--auto-reap` leases are collected by periodic `reap`. Persistent active sessions are left alone.
+
+### Scheduled timer (user systemd) — host admin, opt-in
+
+Repo-owned templates: `packaging/systemd/user/browserctl-reap.{service,timer}.in`  
+Helper (renders **absolute** `ROOT` into units, journal stdout/stderr):
+
+```bash
+# from the browser-ops checkout you want the timer to manage
+./bin/browserctl-reap-timer install          # write units only; does NOT enable
+./bin/browserctl-reap-timer print-units      # preview rendered unit text
+
+# host admin — enable only when you intend the backstop on THIS machine
+./bin/browserctl-reap-timer install --enable --now
+# equivalent manual:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now browserctl-reap.timer
+
+# inspect / logs
+systemctl --user status browserctl-reap.timer browserctl-reap.service
+journalctl --user -u browserctl-reap.service -n 50 --no-pager
+
+# remove
+./bin/browserctl-reap-timer uninstall --disable
+```
+
+| Safety | Detail |
+|---|---|
+| **Do not enable in worktree tasks** that share live control state with intentional long-lived persistent leases until you accept eligibility rules above | timer runs the same gated `reap --json` |
+| Units bake **absolute** `WorkingDirectory` / `ExecStart` / `BROWSER_OPS_ROOT` | re-run `install` after moving the checkout |
+| `Type=oneshot` + timer | no long-running reaper daemon |
+| Default cadence | `OnBootSec=5m`, `OnUnitActiveSec=15m` |
+| User systemd degraded? | fix linger/bus first; helper still writes units |
+
+This tree’s task must **not** install/enable the timer or reap live state as part of landing the feature.
 
 ### Scratch: stable named vs ephemeral one-shot
 

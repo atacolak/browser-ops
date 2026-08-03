@@ -23,6 +23,11 @@ Local browser control plane: CloakBrowser + CDP daemon + session leases + named 
 ./bin/browserctl watch --lease <id> --agent-pane <nav-pane> --json
 ./bin/browserctl release --lease <id> --json
 ./bin/browserctl list --json
+
+# finite navigator job: one_shot is auto-reap eligible if process crashes
+./bin/browserctl spawn --kind scratch --label demo --mode one_shot --owner orch --json
+# normal cleanup is still release in finally — timer is crash backstop only
+# host admin (opt-in): ./bin/browserctl-reap-timer install --enable --now
 ```
 
 Spawn navigator **with returned `env`**. It must not allocate ports/profiles.

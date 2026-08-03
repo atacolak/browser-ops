@@ -139,9 +139,11 @@ def test_release_idempotent(mgr):
     assert len(fake.stops) == 1
 
 
-def test_reap_expired(mgr):
+def test_reap_expired_one_shot(mgr):
     m, fake, state = mgr
-    out = m.acquire({"kind": "scratch", "owner": "a", "ttl": 1})
+    out = m.acquire(
+        {"kind": "scratch", "owner": "a", "mode": "one_shot", "ttl": 1}
+    )
     lid = out["lease"]["lease_id"]
     # backdate expiry
     lease = load_lease(state, lid)
@@ -161,6 +163,79 @@ def test_reap_expired(mgr):
     assert result2["count"] == 0
 
 
+def test_reap_skips_expired_persistent_without_opt_in(mgr):
+    """Default persistent leases age past TTL but stay operator-owned."""
+    from browserctl.store import is_auto_reap_eligible
+
+    m, fake, state = mgr
+    out = m.acquire(
+        {"kind": "scratch", "owner": "a", "mode": "persistent", "ttl": 1}
+    )
+    lid = out["lease"]["lease_id"]
+    lease = load_lease(state, lid)
+    assert lease is not None
+    assert lease["mode"] == "persistent"
+    assert not is_auto_reap_eligible(lease)
+    lease["expires_at"] = time.time() - 10
+    save_lease(state, lease)
+
+    result = m.reap()
+    assert result["count"] == 0
+    assert result["reaped"] == []
+    assert any(
+        s.get("lease_id") == lid and s.get("reason") == "not_auto_reap_eligible"
+        for s in result["skipped"]
+    )
+    assert len(fake.stops) == 0
+    still = load_lease(state, lid)
+    assert still is not None
+    assert still["status"] == "active"
+
+
+def test_reap_expired_persistent_with_auto_reap_flag(mgr):
+    m, fake, state = mgr
+    out = m.acquire(
+        {
+            "kind": "scratch",
+            "owner": "a",
+            "mode": "persistent",
+            "ttl": 1,
+            "auto_reap": True,
+        }
+    )
+    lid = out["lease"]["lease_id"]
+    lease = load_lease(state, lid)
+    assert lease is not None
+    assert lease.get("auto_reap") is True
+    lease["expires_at"] = time.time() - 10
+    save_lease(state, lease)
+
+    result = m.reap()
+    assert result["count"] == 1
+    assert result["reaped"][0]["lease_id"] == lid
+    assert len(fake.stops) == 1
+
+
+def test_reap_expired_expiring_status(mgr):
+    """mark-exit / incomplete release → expiring is always auto-reap eligible."""
+    m, fake, state = mgr
+    out = m.acquire(
+        {"kind": "scratch", "owner": "a", "mode": "persistent", "ttl": 3600}
+    )
+    lid = out["lease"]["lease_id"]
+    m.mark_expiring(lease_id=lid, ttl_seconds=30)
+    lease = load_lease(state, lid)
+    assert lease is not None
+    assert lease["status"] == "expiring"
+    lease["expires_at"] = time.time() - 5
+    save_lease(state, lease)
+
+    result = m.reap()
+    assert result["count"] == 1
+    assert result["reaped"][0]["lease_id"] == lid
+    assert len(fake.stops) == 1
+
+
 def test_reap_force_lease(mgr):
     m, fake, _state = mgr
     out = m.acquire({"kind": "scratch", "owner": "a", "ttl": 9999})
@@ -168,6 +243,38 @@ def test_reap_force_lease(mgr):
     result = m.reap(force_lease_id=lid)
     assert result["count"] == 1
     assert result["reaped"][0]["status"] == "reaped"
+
+
+def test_is_auto_reap_eligible_selection():
+    from browserctl.store import is_auto_reap_eligible
+
+    assert is_auto_reap_eligible({"mode": "one_shot", "status": "active"}) is True
+    assert is_auto_reap_eligible({"mode": "persistent", "status": "expiring"}) is True
+    assert (
+        is_auto_reap_eligible(
+            {"mode": "persistent", "status": "active", "auto_reap": True}
+        )
+        is True
+    )
+    assert (
+        is_auto_reap_eligible(
+            {
+                "mode": "persistent",
+                "status": "active",
+                "meta": {"auto_reap": True},
+            }
+        )
+        is True
+    )
+    assert (
+        is_auto_reap_eligible({"mode": "persistent", "status": "active"}) is False
+    )
+    assert (
+        is_auto_reap_eligible(
+            {"mode": "persistent", "status": "active", "auto_reap": False}
+        )
+        is False
+    )
 
 
 def test_mark_expiring_shortens_ttl(mgr):

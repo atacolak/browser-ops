@@ -1,0 +1,13 @@
+[Unit]
+Description=Run browserctl reap periodically (crash backstop only)
+Documentation=file://@ROOT@/docs/browserctl.md
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+AccuracySec=1m
+Persistent=true
+Unit=browserctl-reap.service
+
+[Install]
+WantedBy=timers.target

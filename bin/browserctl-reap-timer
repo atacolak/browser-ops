@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Install / uninstall user-level systemd timer for `browserctl reap --json`.
+#
+# Crash backstop only — not normal lease cleanup. Orchestrators still
+# release/spawn cleanup in finally. Does not start or enable anything unless
+# you pass enable/start subcommands explicitly.
+#
+# Usage:
+#   ./bin/browserctl-reap-timer install [--enable] [--now]
+#   ./bin/browserctl-reap-timer uninstall [--disable]
+#   ./bin/browserctl-reap-timer status
+#   ./bin/browserctl-reap-timer print-units   # render to stdout (no write)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMPLATE_DIR="${ROOT}/packaging/systemd/user"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_NAME="browserctl-reap.service"
+TIMER_NAME="browserctl-reap.timer"
+
+usage() {
+  sed -n '2,12p' "$0" | sed 's/^# \?//'
+  exit "${1:-0}"
+}
+
+render() {
+  local src="$1"
+  sed "s|@ROOT@|${ROOT}|g" "$src"
+}
+
+write_units() {
+  mkdir -p "$UNIT_DIR"
+  render "${TEMPLATE_DIR}/${SERVICE_NAME}.in" >"${UNIT_DIR}/${SERVICE_NAME}"
+  render "${TEMPLATE_DIR}/${TIMER_NAME}.in" >"${UNIT_DIR}/${TIMER_NAME}"
+  echo "wrote ${UNIT_DIR}/${SERVICE_NAME}"
+  echo "wrote ${UNIT_DIR}/${TIMER_NAME}"
+  echo "root=${ROOT}"
+}
+
+have_systemctl() {
+  command -v systemctl >/dev/null 2>&1
+}
+
+cmd_install() {
+  local enable=0 now=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --enable) enable=1 ;;
+      --now) now=1 ;;
+      -h|--help) usage 0 ;;
+      *) echo "unknown flag: $1" >&2; usage 2 ;;
+    esac
+    shift
+  done
+  write_units
+  if ! have_systemctl; then
+    echo "systemctl not found; units written only" >&2
+    return 0
+  fi
+  systemctl --user daemon-reload
+  if [[ "$enable" -eq 1 ]]; then
+    if [[ "$now" -eq 1 ]]; then
+      systemctl --user enable --now "$TIMER_NAME"
+    else
+      systemctl --user enable "$TIMER_NAME"
+    fi
+    echo "enabled ${TIMER_NAME} (user)"
+  else
+    echo "units installed; not enabled (pass --enable [--now] when ready)"
+    echo "exact enable: systemctl --user enable --now ${TIMER_NAME}"
+  fi
+}
+
+cmd_uninstall() {
+  local disable=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --disable) disable=1 ;;
+      -h|--help) usage 0 ;;
+      *) echo "unknown flag: $1" >&2; usage 2 ;;
+    esac
+    shift
+  done
+  if have_systemctl && [[ "$disable" -eq 1 ]]; then
+    systemctl --user disable --now "$TIMER_NAME" 2>/dev/null || true
+    systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+  fi
+  rm -f "${UNIT_DIR}/${SERVICE_NAME}" "${UNIT_DIR}/${TIMER_NAME}"
+  if have_systemctl; then
+    systemctl --user daemon-reload || true
+  fi
+  echo "removed ${UNIT_DIR}/${SERVICE_NAME} ${UNIT_DIR}/${TIMER_NAME}"
+}
+
+cmd_status() {
+  if ! have_systemctl; then
+    echo "systemctl not found" >&2
+    return 1
+  fi
+  systemctl --user status "$TIMER_NAME" "$SERVICE_NAME" --no-pager || true
+  echo "---"
+  systemctl --user list-timers "$TIMER_NAME" --no-pager || true
+}
+
+cmd_print_units() {
+  echo "### ${SERVICE_NAME}"
+  render "${TEMPLATE_DIR}/${SERVICE_NAME}.in"
+  echo
+  echo "### ${TIMER_NAME}"
+  render "${TEMPLATE_DIR}/${TIMER_NAME}.in"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    status) cmd_status "$@" ;;
+    print-units) cmd_print_units "$@" ;;
+    -h|--help|help|"") usage 0 ;;
+    *) echo "unknown command: $cmd" >&2; usage 2 ;;
+  esac
+}
+
+main "$@"
