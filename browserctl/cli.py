@@ -5,7 +5,7 @@ browserctl — thin human+agent CLI for browser session leases.
 Commands:
   list | status | acquire | release | watch | unwatch | reap | launch | spawn
   navigator spawn | navigator cleanup | navigator status
-  profiles list|show|register|associate|resolve
+  profiles list|show|register|associate|resolve|cards|card|stamp
 
 JSON mode: pass --json (stable for agents/orchestrators).
 
@@ -328,10 +328,15 @@ def cmd_profiles_register(args: argparse.Namespace) -> int:
         launch["attach_only"] = True
     if args.no_start:
         launch["no_start"] = True
+    egress = _egress_from_register_args(args)
+    if egress is not None:
+        launch["egress"] = egress
     out = reg.register(
         args.name,
         launch=launch,
         replace=args.replace,
+        description=args.description,
+        notes=args.notes,
     )
     print(json.dumps({"ok": True, "profile": out}, indent=2, sort_keys=True, default=str))
     return 0
@@ -354,6 +359,58 @@ def cmd_profiles_resolve(args: argparse.Namespace) -> int:
         print(f"launch: {' '.join(out['launch_argv'])}")
         print(json.dumps({"launch": out["launch"]}, indent=2, sort_keys=True, default=str))
     return 0
+
+
+def cmd_profiles_cards(args: argparse.Namespace) -> int:
+    md = _profiles(args).cards()
+    if args.json:
+        print(json.dumps({"ok": True, "markdown": md}, indent=2, sort_keys=True, default=str))
+    else:
+        sys.stdout.write(md)
+        if md and not md.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+def cmd_profiles_card(args: argparse.Namespace) -> int:
+    md = _profiles(args).card(args.name)
+    if args.json:
+        print(json.dumps({"ok": True, "markdown": md}, indent=2, sort_keys=True, default=str))
+    else:
+        sys.stdout.write(md)
+        if md and not md.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+def cmd_profiles_stamp(args: argparse.Namespace) -> int:
+    out = _profiles(args).stamp_verified(args.name)
+    print(json.dumps({"ok": True, "profile": out}, indent=2, sort_keys=True, default=str))
+    return 0
+
+
+def _egress_from_register_args(args: argparse.Namespace) -> Any | None:
+    raw = getattr(args, "egress", None)
+    if raw is None:
+        return None
+    v = str(raw).strip()
+    low = v.lower()
+    if low == "direct":
+        return "direct"
+    if low == "vpn":
+        obj: dict[str, str] = {"type": "vpn"}
+        if getattr(args, "country", None):
+            obj["country"] = args.country
+        if getattr(args, "city", None):
+            obj["city"] = args.city
+        return obj
+    if v.startswith("{"):
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"invalid --egress JSON: {e}") from e
+        return parsed
+    return v
 
 
 def _add_launch_selector_flags(
@@ -818,6 +875,21 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("name", help="stable profile name (e.g. coal-hattie)")
     _add_launch_selector_flags(pr, kind_required=True)
     pr.add_argument(
+        "--description",
+        default=None,
+        help="required face description on new register; --replace may keep existing",
+    )
+    pr.add_argument(
+        "--notes",
+        default=None,
+        help="optional non-secret operator notes",
+    )
+    pr.add_argument(
+        "--egress",
+        default=None,
+        help="launch property: direct | vpn | JSON {type:vpn,country?,city?}",
+    )
+    pr.add_argument(
         "--replace",
         action="store_true",
         help="overwrite launch if name already exists (keeps associations)",
@@ -851,6 +923,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional exact account label",
     )
     pv.set_defaults(func=cmd_profiles_resolve)
+
+    pcards = psub.add_parser(
+        "cards",
+        help="markdown face cards for every named profile (navigator inject)",
+        parents=[shared],
+    )
+    pcards.set_defaults(func=cmd_profiles_cards)
+
+    pcard = psub.add_parser(
+        "card",
+        help="markdown face card for one named profile",
+        parents=[shared],
+    )
+    pcard.add_argument("name", help="registered profile name")
+    pcard.set_defaults(func=cmd_profiles_card)
+
+    pst = psub.add_parser(
+        "stamp",
+        help="set last_verified_at to now (ISO Z)",
+        parents=[shared],
+    )
+    pst.add_argument("name", help="registered profile name")
+    pst.set_defaults(func=cmd_profiles_stamp)
 
     return p
 

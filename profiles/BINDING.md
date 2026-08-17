@@ -12,7 +12,7 @@ Cookies **are** the person. Do not share browsers across accounts.
 
 | Map | File |
 |---|---|
-| stable name → launch + site/account | `profiles/PROFILES.json` (**tracked** named selector registry) |
+| stable name → launch + site/account + description | `profiles/PROFILES.json` (**tracked**, schema **v2**) |
 | xAI email ↔ worker ↔ port | `profiles/IDENTITIES.json` (**runtime**, gitignored; bootstrapped empty on first `identity_ops` list/ensure/…) |
 | API risk stage S0–S6 | `profiles/API_STAGES.json` (**runtime**, gitignored; bootstrapped empty on first stage-list/get/set) |
 | Cloak user-data dirs | `profiles/xai/`, `profiles/scratch/`, `profiles/vpn/` (**runtime**, gitignored) |
@@ -31,17 +31,21 @@ Cookies **are** the person. Do not share browsers across accounts.
 ./bin/browserctl watch --lease <id> --agent-pane <nav-pane> --json
 # waits CDP + non-null active_target_id; default agent 37% / browser 63%
 
-# named registry
-./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --json
+# named registry (v2: description required on new register)
+./bin/browserctl profiles register coal-demo --kind xai --email 'USER@host' --description 'xAI as USER. Chat only.' --json
 ./bin/browserctl profiles associate coal-demo x.ai 'USER@host' --json   # after proven login
 ./bin/browserctl profiles resolve x.ai --account 'USER@host' --json     # emit only
+./bin/browserctl profiles cards --json   # markdown face cards (navigator inject)
+./bin/browserctl profiles stamp coal-demo --json   # last_verified_at = now
 ./bin/browserctl launch --profile coal-demo --json   # stamps BROWSERCTL_PROFILE_NAME
 ```
 
-- Returns navigator `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, …).
+- Returns navigator `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, `BROWSER_CDP_URL`, …).
 - Enforces **one mutation lease per worker**; refuses managed **`default`**.
 - xAI path calls **`identity_ops`**.
 - `--profile` is exclusive with launch selector flags; associations are explicit (never URL-inferred).
+- New named faces require a **description**. `launch.egress` is `direct` or `{type:vpn,…}` — never a peer kind. `kind=xai` stays an adapter for old rows; navigators propose `scratch` (+ associate), not `kind=xai`.
+- OMP navigators bind via `bind_profile` (session `browser.cdpUrl`). They do not shell `browserctl`.
 
 Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md).
 

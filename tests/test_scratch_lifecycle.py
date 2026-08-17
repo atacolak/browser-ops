@@ -187,8 +187,8 @@ def test_manager_retryable_and_reap_skip(ops):
 
 def test_named_scratch_stable_pool(ops):
     root, state = ops
-    ProfileRegistry(root).register("lab", launch={"kind": "scratch", "label": "d"})
-    ProfileRegistry(root).register("pin", launch={"kind": "scratch", "worker": "scratch-pin"})
+    ProfileRegistry(root).register("lab", launch={"kind": "scratch", "label": "d"}, description="lab test face")
+    ProfileRegistry(root).register("pin", launch={"kind": "scratch", "worker": "scratch-pin"}, description="pin test face")
     m = Manager(root=root, state_root=state)
     with mock.patch("browserctl.manager.get_adapter", return_value=_Ad()):
         o1 = m.acquire({"profile_name": "lab", "owner": "a", "ttl": 60})

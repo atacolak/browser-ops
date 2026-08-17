@@ -64,7 +64,7 @@ def env(tmp_path: Path):
 
 
 def _reg(root, name, launch):
-    return ProfileRegistry(root).register(name, launch=launch)
+    return ProfileRegistry(root).register(name, launch=launch, description=f"{name} test face")
 
 
 def test_profile_stamp_and_headed(env):
@@ -124,6 +124,8 @@ def test_cli_profile_conflict_and_legacy(env, capsys):
                 "xai",
                 "--email",
                 "demo@example.com",
+                "--description",
+                "coal-demo test face",
                 "--json",
             ]
         )

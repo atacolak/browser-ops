@@ -4,7 +4,7 @@ Named persistent browser profile registry.
 Repo-local map: stable profile name → browserctl launch selector + site/account
 associations. No secrets. No capability ontology.
 
-Storage: profiles/PROFILES.json (schema v1)
+Storage: profiles/PROFILES.json (schema v2)
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from browserctl.errors import BrowserctlError, InvalidRequest, LeaseConflict
 from browserctl.locks import mkdir_lock
 from browserctl.paths import profiles_registry_path, resolve_root
 
-PROFILES_SCHEMA_VERSION = 1
+PROFILES_SCHEMA_VERSION = 2
 
 # Stable operator names: lowercase start, alnum/_/- , 1–64 chars.
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -49,8 +49,75 @@ _LAUNCH_KEYS = frozenset(
         "headed",
         "attach_only",
         "no_start",
+        "egress",
     }
 )
+
+
+def validate_description(description: str | None, *, required: bool = True) -> str | None:
+    if description is None:
+        if required:
+            raise InvalidRequest("profile description is required")
+        return None
+    if not isinstance(description, str):
+        raise InvalidRequest("profile description must be a string")
+    d = description.strip()
+    if not d:
+        raise InvalidRequest("profile description must be a non-empty string")
+    return d
+
+
+def validate_notes(notes: str | None) -> str | None:
+    if notes is None:
+        return None
+    if not isinstance(notes, str):
+        raise InvalidRequest("profile notes must be a string")
+    n = notes.strip()
+    if not n:
+        return None
+    if _FORBIDDEN_FIELD_RE.search(n) and (":" in n or "=" in n):
+        raise InvalidRequest("notes look like a secret field")
+    return n
+
+
+def validate_egress(raw: Any) -> str | dict[str, str]:
+    """egress is a launch property, not a peer identity. omitted|'direct'|{type:vpn}."""
+    if raw is None:
+        raise InvalidRequest("launch.egress must be 'direct' or {type: vpn, ...}")
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v == "direct":
+            return "direct"
+        raise InvalidRequest(
+            "launch.egress must be 'direct' or an object {type: vpn, country?, city?}",
+            egress=raw,
+        )
+    if not isinstance(raw, dict):
+        raise InvalidRequest(
+            "launch.egress must be 'direct' or an object {type: vpn, country?, city?}",
+            egress=raw,
+        )
+    _reject_secret_keys(raw, where="launch.egress")
+    unknown = set(raw) - {"type", "country", "city"}
+    if unknown:
+        raise InvalidRequest(
+            f"unknown launch.egress keys: {sorted(unknown)}",
+            unknown=sorted(unknown),
+        )
+    typ = str(raw.get("type") or "").strip().lower()
+    if typ != "vpn":
+        raise InvalidRequest(
+            "launch.egress object type must be vpn",
+            type=raw.get("type"),
+        )
+    out: dict[str, str] = {"type": "vpn"}
+    for key in ("country", "city"):
+        if key not in raw or raw[key] is None:
+            continue
+        val = str(raw[key]).strip()
+        if val:
+            out[key] = val
+    return out
 
 
 class ProfileNotFound(BrowserctlError):
@@ -223,6 +290,8 @@ def validate_launch(launch: dict[str, Any]) -> dict[str, Any]:
                 "vpn launch requires worker and/or country",
                 kind=kind,
             )
+    if "egress" in launch and launch["egress"] is not None:
+        out["egress"] = validate_egress(launch["egress"])
     return out
 
 
@@ -245,21 +314,67 @@ def _normalize_association(raw: Any) -> dict[str, str]:
 
 
 def _public_profile(name: str, entry: dict[str, Any]) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "name": name,
         "launch": dict(entry.get("launch") or {}),
         "associations": list(entry.get("associations") or []),
-        **(
-            {"created_at": entry["created_at"]}
-            if entry.get("created_at")
-            else {}
-        ),
-        **(
-            {"updated_at": entry["updated_at"]}
-            if entry.get("updated_at")
-            else {}
-        ),
     }
+    if entry.get("description"):
+        out["description"] = entry["description"]
+    if entry.get("notes"):
+        out["notes"] = entry["notes"]
+    if entry.get("last_verified_at"):
+        out["last_verified_at"] = entry["last_verified_at"]
+    if entry.get("created_at"):
+        out["created_at"] = entry["created_at"]
+    if entry.get("updated_at"):
+        out["updated_at"] = entry["updated_at"]
+    return out
+
+
+def _assoc_label(assoc: dict[str, Any]) -> str:
+    site = assoc.get("site") or "?"
+    account = assoc.get("account")
+    return f"{site} / {account}" if account else str(site)
+
+
+def _egress_label(launch: dict[str, Any]) -> str:
+    egress = launch.get("egress")
+    if egress is None or egress == "direct":
+        return "direct"
+    if isinstance(egress, dict):
+        bits = [str(egress.get("type") or "vpn")]
+        if egress.get("country"):
+            bits.append(str(egress["country"]))
+        if egress.get("city"):
+            bits.append(str(egress["city"]))
+        return " ".join(bits)
+    return str(egress)
+
+
+def card_markdown(name: str, entry: dict[str, Any]) -> str:
+    """Navigator-inject face card. No secrets."""
+    launch = dict(entry.get("launch") or {})
+    lines = [f"## {name}", ""]
+    desc = str(entry.get("description") or "").strip()
+    if desc:
+        lines.append(desc)
+        lines.append("")
+    lines.append(f"- kind: {launch.get('kind', '?')}")
+    lines.append(f"- egress: {_egress_label(launch)}")
+    if entry.get("last_verified_at"):
+        lines.append(f"- last_verified_at: {entry['last_verified_at']}")
+    if entry.get("notes"):
+        lines.append(f"- notes: {entry['notes']}")
+    assocs = []
+    for raw in entry.get("associations") or []:
+        try:
+            assocs.append(_assoc_label(_normalize_association(raw)))
+        except InvalidRequest:
+            continue
+    if assocs:
+        lines.append(f"- associations: {', '.join(assocs)}")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def load_registry(root: Path | str | None = None) -> dict[str, Any]:
@@ -317,9 +432,13 @@ class ProfileRegistry:
         *,
         launch: dict[str, Any],
         replace: bool = False,
+        description: str | None = None,
+        notes: str | None = None,
     ) -> dict[str, Any]:
         name = validate_profile_name(name)
         launch_n = validate_launch(launch)
+        desc_n = validate_description(description, required=False)
+        notes_n = validate_notes(notes) if notes is not None else None
         with _registry_lock(self.path):
             reg = load_registry(self.root)
             existing = reg["profiles"].get(name)
@@ -335,17 +454,69 @@ class ProfileRegistry:
                 entry["updated_at"] = now
                 entry.setdefault("associations", [])
                 entry.setdefault("created_at", now)
-                entry.pop("notes", None)
+                if desc_n is not None:
+                    entry["description"] = desc_n
+                if notes is not None:
+                    if notes_n is None:
+                        entry.pop("notes", None)
+                    else:
+                        entry["notes"] = notes_n
             else:
+                if desc_n is None:
+                    raise InvalidRequest(
+                        "profile description is required",
+                        name=name,
+                    )
                 entry = {
+                    "description": desc_n,
                     "launch": launch_n,
                     "associations": [],
                     "created_at": now,
                     "updated_at": now,
                 }
+                if notes_n is not None:
+                    entry["notes"] = notes_n
+            if not str(entry.get("description") or "").strip():
+                raise InvalidRequest(
+                    "profile description is required",
+                    name=name,
+                )
             reg["profiles"][name] = entry
             save_registry(reg, self.root)
             return _public_profile(name, entry)
+
+    def stamp_verified(self, name: str) -> dict[str, Any]:
+        name = validate_profile_name(name)
+        with _registry_lock(self.path):
+            reg = load_registry(self.root)
+            entry = reg["profiles"].get(name)
+            if not isinstance(entry, dict):
+                raise ProfileNotFound(name=name)
+            entry = dict(entry)
+            now = _now_iso()
+            entry["last_verified_at"] = now
+            entry["updated_at"] = now
+            reg["profiles"][name] = entry
+            save_registry(reg, self.root)
+            return _public_profile(name, entry)
+
+    def card(self, name: str) -> str:
+        name = validate_profile_name(name)
+        reg = load_registry(self.root)
+        entry = reg["profiles"].get(name)
+        if not isinstance(entry, dict):
+            raise ProfileNotFound(name=name)
+        return card_markdown(name, entry)
+
+    def cards(self) -> str:
+        reg = load_registry(self.root)
+        names = sorted(reg["profiles"].keys())
+        parts = [
+            card_markdown(n, reg["profiles"][n])
+            for n in names
+            if isinstance(reg["profiles"].get(n), dict)
+        ]
+        return "\n".join(p.rstrip() for p in parts).rstrip() + ("\n" if parts else "")
 
     def associate(
         self,
@@ -459,20 +630,35 @@ class ProfileRegistry:
 
 
 def launch_to_argv(launch: dict[str, Any]) -> list[str]:
-    """Exact browserctl argv fragment after the program name (starts with 'launch')."""
+    """Exact browserctl argv fragment after the program name (starts with 'launch').
+
+    egress never switches kind. country/city flags are emitted only when
+    kind is already vpn (from launch or egress geo). scratch+egress vpn
+    stays a scratch argv; the object is for cards/harness.
+    """
     launch = validate_launch(launch)
-    argv: list[str] = ["launch", "--kind", str(launch["kind"])]
+    kind = str(launch["kind"])
+    argv: list[str] = ["launch", "--kind", kind]
     flag_map = [
         ("email", "--email"),
         ("worker", "--worker"),
         ("label", "--label"),
         ("cdp_port", "--cdp-port"),
-        ("country", "--country"),
-        ("city", "--city"),
     ]
     for key, flag in flag_map:
         if key in launch and launch[key] is not None:
             argv.extend([flag, str(launch[key])])
+    if kind == "vpn":
+        country = launch.get("country")
+        city = launch.get("city")
+        egress = launch.get("egress")
+        if isinstance(egress, dict) and egress.get("type") == "vpn":
+            country = country or egress.get("country")
+            city = city or egress.get("city")
+        if country:
+            argv.extend(["--country", str(country)])
+        if city:
+            argv.extend(["--city", str(city)])
     if launch.get("headed"):
         argv.append("--headed")
     if launch.get("attach_only"):

@@ -66,14 +66,16 @@ def test_register_show_list_atomic(reg_root: Path):
     p = r.register(
         "coal-demo",
         launch={"kind": "xai", "email": "demo@example.com"},
+        description="coal-demo test face",
     )
     assert p["name"] == "coal-demo"
+    assert p["description"] == "coal-demo test face"
     assert p["launch"]["email"] == "demo@example.com"
     assert "notes" not in p
     path = reg_root / "profiles" / "PROFILES.json"
     assert path.is_file()
     raw = json.loads(path.read_text())
-    assert raw["version"] == 1
+    assert raw["version"] == 2
     assert "coal-demo" in raw["profiles"]
 
     shown = r.show("coal-demo")
@@ -84,17 +86,21 @@ def test_register_show_list_atomic(reg_root: Path):
     with pytest.raises(InvalidRequest):
         r.register("coal-demo", launch={"kind": "xai", "email": "other@example.com"})
 
+    with pytest.raises(InvalidRequest):
+        r.register("no-desc", launch={"kind": "scratch", "label": "x"})
+
     p2 = r.register(
         "coal-demo",
         launch={"kind": "xai", "email": "other@example.com"},
         replace=True,
     )
     assert p2["launch"]["email"] == "other@example.com"
+    assert p2["description"] == "coal-demo test face"
 
 
 def test_associate_and_resolve_strict_accountless(reg_root: Path):
     r = ProfileRegistry(reg_root)
-    r.register("coal-a", launch={"kind": "xai", "email": "a@example.com"})
+    r.register("coal-a", launch={"kind": "xai", "email": "a@example.com"}, description="coal-a test face")
     r.associate("coal-a", "x.ai", "a@example.com")
     r.associate("coal-a", "cpa-manager")  # site-only / accountless
 
@@ -125,7 +131,7 @@ def test_associate_and_resolve_strict_accountless(reg_root: Path):
 
 def test_resolve_accountless_does_not_match_account_scoped(reg_root: Path):
     r = ProfileRegistry(reg_root)
-    r.register("p1", launch={"kind": "xai", "email": "1@example.com"})
+    r.register("p1", launch={"kind": "xai", "email": "1@example.com"}, description="p1 test face")
     r.associate("p1", "x.ai", "1@example.com")
     # even unique account-scoped row must not win without --account
     with pytest.raises(ProfileNotFound) as ei:
@@ -136,8 +142,8 @@ def test_resolve_accountless_does_not_match_account_scoped(reg_root: Path):
 
 def test_resolve_ambiguity_refused(reg_root: Path):
     r = ProfileRegistry(reg_root)
-    r.register("p1", launch={"kind": "xai", "email": "1@example.com"})
-    r.register("p2", launch={"kind": "xai", "email": "2@example.com"})
+    r.register("p1", launch={"kind": "xai", "email": "1@example.com"}, description="p1 test face")
+    r.register("p2", launch={"kind": "xai", "email": "2@example.com"}, description="p2 test face")
     r.associate("p1", "x.ai")
     r.associate("p2", "x.ai")
 
@@ -155,6 +161,7 @@ def test_resolve_never_creates_scratch(reg_root: Path):
     r.register(
         "scratch-named",
         launch={"kind": "scratch", "label": "demo"},
+        description="scratch-named test face",
     )
     r.associate("scratch-named", "example.com")
     out = r.resolve("example.com")
@@ -192,7 +199,7 @@ def test_registry_lock_timeout_is_profile_not_lease(reg_root: Path):
 
     with mock.patch("browserctl.profiles.mkdir_lock", side_effect=boom):
         with pytest.raises(ProfileLockTimeout) as ei:
-            r.register("x", launch={"kind": "xai", "email": "a@b.com"})
+            r.register("x", launch={"kind": "xai", "email": "a@b.com"}, description="x test face")
     assert ei.value.code == "PROFILE_LOCK_TIMEOUT"
     assert ei.value.code != "LEASE_CONFLICT"
 
@@ -211,6 +218,8 @@ def test_cli_profiles_crud_and_resolve(reg_root: Path, capsys):
                 "xai",
                 "--email",
                 "cli@example.com",
+                "--description",
+                "coal-cli test face",
                 "--json",
             ]
         )
@@ -289,6 +298,8 @@ def test_cli_resolve_ambiguous(reg_root: Path, capsys):
                     "xai",
                     "--email",
                     email,
+                    "--description",
+                    f"{name} test face",
                     "--json",
                 ]
             )
@@ -333,9 +344,57 @@ def test_cli_lock_timeout_code(reg_root: Path, capsys):
                 "xai",
                 "--email",
                 "l@e.com",
+                "--description",
+                "locked test face",
                 "--json",
             ]
         )
     assert code == 1
     err = json.loads(capsys.readouterr().out)
     assert err["error"]["code"] == "PROFILE_LOCK_TIMEOUT"
+
+
+def test_cards_stamp_and_egress(reg_root: Path, capsys):
+    r = ProfileRegistry(reg_root)
+    r.register(
+        "github-ata",
+        launch={"kind": "scratch", "label": "github-ata", "egress": "direct"},
+        description="GitHub as atacolak. Issues, PRs.",
+    )
+    r.associate("github-ata", "github.com", "atacolak")
+    stamped = r.stamp_verified("github-ata")
+    assert stamped["last_verified_at"].endswith("Z")
+    assert "GitHub as atacolak" in r.card("github-ata")
+    cards = r.cards()
+    assert "## github-ata" in cards
+    assert "last_verified_at:" in cards
+
+    scratch_vpn = validate_launch(
+        {"kind": "scratch", "label": "x", "egress": {"type": "vpn", "country": "SE"}}
+    )
+    assert scratch_vpn["kind"] == "scratch"
+    argv = launch_to_argv(scratch_vpn)
+    assert argv[:3] == ["launch", "--kind", "scratch"]
+    assert "--country" not in argv
+
+    assert (
+        main(
+            [
+                "--root",
+                str(reg_root),
+                "profiles",
+                "cards",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert "github-ata" in out["markdown"]
+
+    assert (
+        main(["--root", str(reg_root), "profiles", "stamp", "github-ata", "--json"]) == 0
+    )
+    stamp_out = json.loads(capsys.readouterr().out)
+    assert stamp_out["profile"]["last_verified_at"]

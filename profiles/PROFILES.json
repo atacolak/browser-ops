@@ -8,39 +8,43 @@
         }
       ],
       "created_at": "2026-07-29T15:27:39Z",
+      "description": "GitHub as atacolak. Issues, PRs, reviews. Not billing or org admin.",
       "launch": {
         "kind": "scratch",
         "label": "github-ata"
       },
-      "updated_at": "2026-07-29T15:27:39Z"
+      "updated_at": "2026-08-14T00:00:00Z"
     },
     "scratch-general-1": {
       "associations": [],
       "created_at": "2026-07-29T14:34:11Z",
+      "description": "Anonymous general scratch pool slot 1. No logins.",
       "launch": {
         "kind": "scratch",
         "label": "scratch-general-1"
       },
-      "updated_at": "2026-07-29T14:34:11Z"
+      "updated_at": "2026-08-14T00:00:00Z"
     },
     "scratch-general-2": {
       "associations": [],
       "created_at": "2026-07-29T14:34:11Z",
+      "description": "Anonymous general scratch pool slot 2. No logins.",
       "launch": {
         "kind": "scratch",
         "label": "scratch-general-2"
       },
-      "updated_at": "2026-07-29T14:34:11Z"
+      "updated_at": "2026-08-14T00:00:00Z"
     },
     "scratch-general-3": {
       "associations": [],
       "created_at": "2026-07-29T14:34:11Z",
+      "description": "Anonymous general scratch pool slot 3. No logins.",
       "launch": {
         "kind": "scratch",
         "label": "scratch-general-3"
       },
-      "updated_at": "2026-07-29T14:34:11Z"
+      "updated_at": "2026-08-14T00:00:00Z"
     }
   },
-  "version": 1
+  "version": 2
 }
