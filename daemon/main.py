@@ -14,8 +14,8 @@ Usage::
     # Diagnostics (offline)
     python3 -m daemon.main --doctor
 
-    # Production / coal identities
-    python3 identity_ops.py ensure --email 'USER@host' --json
+    # Leased work
+    ./bin/browserctl launch --kind scratch --label demo --json
 
 One daemon per worker.  The daemon holds a CDP connection to CloakBrowser,
 listens on a Unix socket (or TCP) for agent commands, and relays them to

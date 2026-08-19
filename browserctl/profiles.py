@@ -34,13 +34,12 @@ _FORBIDDEN_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
-_LAUNCH_KINDS = frozenset({"xai", "scratch", "adhoc", "vpn"})
+_LAUNCH_KINDS = frozenset({"scratch", "adhoc", "vpn"})
 
-# Persistent launch selector only — runtime lease fields (owner/mode/ttl) stay on acquire/launch.
+# Persistent launch selector only — runtime lease fields stay on acquire/launch.
 _LAUNCH_KEYS = frozenset(
     {
         "kind",
-        "email",
         "worker",
         "label",
         "cdp_port",
@@ -241,7 +240,7 @@ def validate_launch(launch: dict[str, Any]) -> dict[str, Any]:
     kind = str(launch.get("kind") or "").strip().lower()
     if kind not in _LAUNCH_KINDS:
         raise InvalidRequest(
-            "launch.kind must be one of xai|scratch|adhoc|vpn",
+            "launch.kind must be one of scratch|adhoc|vpn",
             kind=launch.get("kind"),
         )
     out: dict[str, Any] = {"kind": kind}
@@ -267,14 +266,7 @@ def validate_launch(launch: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError) as e:
             raise InvalidRequest(f"launch.{key} must be a number", key=key) from e
 
-    if kind == "xai":
-        email = str(launch.get("email") or "").strip()
-        if not email or "@" not in email:
-            raise InvalidRequest("xai launch requires email", kind=kind)
-        out["email"] = email
-        _opt_str("worker")
-        _opt_bool("no_start")  # identity_ops ensure supports bind-only
-    elif kind in ("scratch", "adhoc"):
+    if kind in ("scratch", "adhoc"):
         _opt_str("label")
         _opt_str("worker")
         _opt_num("cdp_port", as_int=True)
@@ -640,7 +632,6 @@ def launch_to_argv(launch: dict[str, Any]) -> list[str]:
     kind = str(launch["kind"])
     argv: list[str] = ["launch", "--kind", kind]
     flag_map = [
-        ("email", "--email"),
         ("worker", "--worker"),
         ("label", "--label"),
         ("cdp_port", "--cdp-port"),

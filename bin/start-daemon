@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Blessed ad-hoc daemon entrypoint. Sets the env contract and execs -m daemon.main.
-# Coal / production identities should still use: identity_ops.py ensure --email …
+# Leased work should go through: ./bin/browserctl launch …
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

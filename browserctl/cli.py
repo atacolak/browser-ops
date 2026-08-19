@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
-browserctl — thin human+agent CLI for browser session leases.
+browserctl — lease + named-profile CLI.
 
-Commands:
-  list | status | acquire | release | watch | unwatch | reap | launch | spawn
-  navigator spawn | navigator cleanup | navigator status
+  list | status | acquire | release | reap | mark-exit | launch
   profiles list|show|register|associate|resolve|cards|card|stamp
 
-JSON mode: pass --json (stable for agents/orchestrators).
-
-Orchestrator-facing navigator lifecycle is resource-oriented:
-  browserctl navigator spawn … --json
-  browserctl navigator cleanup --lease ID|--name NAME --json
+JSON: --json
 """
 
 from __future__ import annotations
@@ -22,7 +16,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Ensure browser-ops root on path for identity_ops + daemon.*
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -40,12 +33,11 @@ def _print(data: Any, *, as_json: bool, text_fn=None) -> None:
 
 
 def _global_parent() -> argparse.ArgumentParser:
-    """Shared flags; subparsers must inherit so `--json` works after the subcommand."""
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
         "--root",
         default=None,
-        help="browser-ops root (default: repo root or BROWSER_OPS_ROOT)",
+        help="browser-ops root (default: this repo, or BROWSER_OPS_ROOT)",
     )
     p.add_argument(
         "--state-root",
@@ -91,13 +83,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 _SELECTOR_DESTS = (
-    "kind", "email", "worker", "label", "cdp_port",
+    "kind", "worker", "label", "cdp_port",
     "country", "city", "headed", "no_start", "attach_only",
 )
 
 
-def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = False) -> dict[str, Any]:
-    """Build acquire/launch request (unset selector flags use argparse.SUPPRESS)."""
+def _request_from_launch_args(args: argparse.Namespace) -> dict[str, Any]:
     req: dict[str, Any] = {
         "owner": args.owner,
         "mode": args.mode,
@@ -107,44 +98,27 @@ def _request_from_launch_args(args: argparse.Namespace, *, for_launch: bool = Fa
         req["auto_reap"] = True
     if getattr(args, "profile", None):
         req["profile_name"] = args.profile
+        return req
+    for dest in _SELECTOR_DESTS:
+        if getattr(args, dest, None) is None:
+            continue
+        val = getattr(args, dest)
+        req[dest] = val
+        if dest == "worker":
+            req["worker_id"] = val
+    if "headed" in req:
+        req["headed"] = bool(req["headed"])
     else:
-        for dest in _SELECTOR_DESTS:
-            if getattr(args, dest, None) is None:
-                continue
-            val = getattr(args, dest)
-            req[dest] = val
-            if dest == "worker":
-                req["worker_id"] = val
-        # Legacy default when --headed omitted: headless browser.
-        if "headed" in req:
-            req["headed"] = bool(req["headed"])
-        else:
-            req["headless"] = True
-        for flag in ("no_start", "attach_only"):
-            if flag in req:
-                req[flag] = bool(req[flag])
-
-    if for_launch:
-        req["watch"] = bool(getattr(args, "watch", False))
-        req["agent_pane"] = getattr(args, "agent_pane", None)
-        req["ratio"] = getattr(args, "ratio", None)
-        req["ready_timeout"] = getattr(args, "ready_timeout", None)
-        req["herdr_session"] = getattr(args, "herdr_session", None)
-        req["herdr_socket"] = getattr(args, "herdr_socket", None)
-        req["watch_input"] = getattr(args, "watch_input", None)
-        # Viewport modes are normalized by watch.py; CLI only passes values.
-        if getattr(args, "viewport", None) is not None:
-            req["viewport"] = args.viewport
-        if getattr(args, "viewport_width", None) is not None:
-            req["viewport_width"] = args.viewport_width
-        if getattr(args, "viewport_height", None) is not None:
-            req["viewport_height"] = args.viewport_height
+        req["headless"] = True
+    for flag in ("no_start", "attach_only"):
+        if flag in req:
+            req[flag] = bool(req[flag])
     return req
 
 
 def cmd_acquire(args: argparse.Namespace) -> int:
     m = _mgr(args)
-    req = _request_from_launch_args(args, for_launch=False)
+    req = _request_from_launch_args(args)
     out = m.acquire(req)
     if args.json:
         print(json.dumps(out, indent=2, sort_keys=True, default=str))
@@ -167,38 +141,6 @@ def cmd_release(args: argparse.Namespace) -> int:
         lease_id=args.lease,
         worker_id=args.worker,
         force=args.force,
-        keep_watch=args.keep_watch,
-    )
-    print(json.dumps(out, indent=2, sort_keys=True, default=str) if args.json else json.dumps(out, indent=2, default=str))
-    return 0
-
-
-def cmd_watch(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    out = m.watch(
-        lease_id=args.lease,
-        worker_id=args.worker,
-        agent_pane=args.agent_pane,
-        ratio=args.ratio,
-        direction=args.direction,
-        herdr_session=args.herdr_session,
-        herdr_socket=args.herdr_socket,
-        ready_timeout_s=getattr(args, "ready_timeout", None),
-        watch_input=getattr(args, "watch_input", None),
-        viewport=getattr(args, "viewport", None),
-        viewport_width=getattr(args, "viewport_width", None),
-        viewport_height=getattr(args, "viewport_height", None),
-    )
-    print(json.dumps(out, indent=2, sort_keys=True, default=str))
-    return 0
-
-
-def cmd_unwatch(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    out = m.unwatch(
-        lease_id=args.lease,
-        worker_id=args.worker,
-        close=not args.keep_pane,
     )
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
@@ -220,63 +162,10 @@ def cmd_mark_exit(args: argparse.Namespace) -> int:
 
 def cmd_launch(args: argparse.Namespace) -> int:
     m = _mgr(args)
-    req = _request_from_launch_args(args, for_launch=True)
+    req = _request_from_launch_args(args)
     out = m.launch(req)
-    # launch always prefers JSON-shaped env for orchestrators when --json
     print(json.dumps(out, indent=2, sort_keys=True, default=str))
     return 0
-
-
-# ── navigator lifecycle (orchestrator-only seam) ─────────────────────────────
-
-
-def cmd_navigator_spawn(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    req = _request_from_launch_args(args, for_launch=True)
-    # Navigator-specific knobs (not part of bare launch contract).
-    if getattr(args, "name", None):
-        req["name"] = args.name
-    if getattr(args, "model", None):
-        req["model"] = args.model
-    if getattr(args, "thinking", None):
-        req["thinking"] = args.thinking
-    if getattr(args, "split", None):
-        req["split"] = args.split
-    if getattr(args, "navigator_lifecycle", None):
-        req["navigator_lifecycle"] = args.navigator_lifecycle
-    if getattr(args, "workspace", None):
-        req["workspace"] = args.workspace
-    if getattr(args, "tab", None):
-        req["tab"] = args.tab
-    if getattr(args, "agent_ctl", None):
-        req["agent_ctl"] = args.agent_ctl
-    out = m.navigator_spawn(req)
-    print(json.dumps(out, indent=2, sort_keys=True, default=str))
-    return 0
-
-
-def cmd_navigator_cleanup(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    out = m.navigator_cleanup(
-        lease_id=args.lease,
-        name=args.name,
-        force=bool(getattr(args, "force", False)),
-        keep_watch=bool(getattr(args, "keep_watch", False)),
-        skip_navigator_close=bool(getattr(args, "skip_navigator_close", False)),
-    )
-    print(json.dumps(out, indent=2, sort_keys=True, default=str))
-    # Non-zero when not settled so finally/retry loops can detect incomplete cleanup.
-    return 0 if out.get("ok") else 1
-
-
-def cmd_navigator_status(args: argparse.Namespace) -> int:
-    m = _mgr(args)
-    out = m.navigator_status(lease_id=args.lease, name=args.name)
-    print(json.dumps(out, indent=2, sort_keys=True, default=str))
-    return 0
-
-
-# ── named profile registry ───────────────────────────────────────────────────
 
 
 def cmd_profiles_list(args: argparse.Namespace) -> int:
@@ -299,19 +188,13 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
 def cmd_profiles_show(args: argparse.Namespace) -> int:
     reg = _profiles(args)
     out = reg.show(args.name)
-    payload = {"ok": True, "profile": out}
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    else:
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    print(json.dumps({"ok": True, "profile": out}, indent=2, sort_keys=True, default=str))
     return 0
 
 
 def cmd_profiles_register(args: argparse.Namespace) -> int:
     reg = _profiles(args)
     launch: dict[str, Any] = {"kind": args.kind}
-    if args.email:
-        launch["email"] = args.email
     if args.worker:
         launch["worker"] = args.worker
     if args.label:
@@ -419,18 +302,16 @@ def _add_launch_selector_flags(
     kind_required: bool = True,
     suppress_defaults: bool = False,
 ) -> None:
-    """Selector flags. suppress_defaults → argparse.SUPPRESS (acquire/launch)."""
     d: dict[str, Any] = {"default": argparse.SUPPRESS} if suppress_defaults else {}
     kind_kw: dict[str, Any] = {
-        "choices": ["xai", "scratch", "adhoc", "vpn"],
-        "help": "lifecycle adapter / launch kind",
+        "choices": ["scratch", "adhoc", "vpn"],
+        "help": "scratch (default face) or vpn",
         **d,
     }
     if kind_required:
         kind_kw["required"] = True
         kind_kw.pop("default", None)
     p.add_argument("--kind", **kind_kw)
-    p.add_argument("--email", help="xai identity email", **d)
     p.add_argument("--worker", help="worker id (vpn/scratch optional)", **d)
     p.add_argument("--label", help="scratch label", **d)
     p.add_argument("--cdp-port", type=int, **({} if suppress_defaults else {"default": None}), **d)
@@ -448,55 +329,23 @@ def _add_profile_flag(p: argparse.ArgumentParser) -> None:
         "--profile",
         default=None,
         metavar="NAME",
-        help="named profile (profiles show); exclusive with selector flags",
+        help="named profile; exclusive with selector flags",
     )
 
 
-def _add_watch_input_flag(p: argparse.ArgumentParser, *, with_watch_prefix: bool = False) -> None:
-    prefix = "with --watch: " if with_watch_prefix else ""
+def _add_lease_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--owner", default="operator")
     p.add_argument(
-        "--watch-input",
-        default="read-only",
-        choices=["read-only", "interactive"],
-        help=(
-            f"{prefix}browser pane input policy (default read-only; "
-            "interactive enables human mouse/keyboard/current-page navigation "
-            "without target or browser lifecycle ownership)"
-        ),
+        "--mode",
+        default="persistent",
+        choices=["persistent", "one_shot"],
+        help="one_shot: 15m TTL + auto-reap",
     )
-
-
-def _add_viewport_flags(
-    p: argparse.ArgumentParser,
-    *,
-    with_watch_prefix: bool = False,
-) -> None:
-    """Shared --viewport / size flags for watch, launch --watch, navigator spawn.
-
-    Normalization lives in browserctl.watch. This only collects CLI values.
-    """
-    prefix = "with --watch: " if with_watch_prefix else ""
+    p.add_argument("--ttl", type=float, default=None)
     p.add_argument(
-        "--viewport",
-        default=None,
-        choices=["fixed", "follow-pane", "preserve"],
-        help=(
-            f"{prefix}observe_mirror layout policy "
-            "(default fixed → HERDR_BROWSER_VIEWPORT_MODE=fixed at 1150x902; "
-            "follow-pane reflows page with terminal; preserve never mutates)"
-        ),
-    )
-    p.add_argument(
-        "--viewport-width",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed mode width override (default 1150)",
-    )
-    p.add_argument(
-        "--viewport-height",
-        type=int,
-        default=None,
-        help=f"{prefix}fixed mode height override (default 902)",
+        "--auto-reap",
+        action="store_true",
+        help="mark persistent lease eligible for scheduled reap",
     )
 
 
@@ -504,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     shared = _global_parent()
     p = argparse.ArgumentParser(
         prog="browserctl",
-        description="Browser session lease manager (identity_ops remains canonical for xAI)",
+        description="Lease a Cloak browser. Named profiles live in profiles/PROFILES.json.",
         parents=[shared],
     )
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -518,119 +367,28 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--worker")
     st.set_defaults(func=cmd_status)
 
-    ac = sub.add_parser(
-        "acquire", help="acquire a mutation lease + start adapter", parents=[shared]
-    )
+    ac = sub.add_parser("acquire", help="acquire a mutation lease + start adapter", parents=[shared])
     _add_profile_flag(ac)
     _add_launch_selector_flags(ac, kind_required=False, suppress_defaults=True)
-    ac.add_argument("--owner", default="operator")
-    ac.add_argument(
-        "--mode",
-        default="persistent",
-        choices=["persistent", "one_shot"],
-        help="persistent: orchestrator releases; one_shot: shorter TTL + auto-reap",
-    )
-    ac.add_argument("--ttl", type=float, default=None)
-    ac.add_argument(
-        "--auto-reap",
-        action="store_true",
-        help=(
-            "mark lease auto-reap eligible for scheduled browserctl reap "
-            "(one_shot and expiring leases are already eligible)"
-        ),
-    )
+    _add_lease_flags(ac)
     ac.set_defaults(func=cmd_acquire)
 
-    rel = sub.add_parser(
-        "release", help="release lease and stop resources", parents=[shared]
-    )
+    rel = sub.add_parser("release", help="release lease and stop resources", parents=[shared])
     rel.add_argument("--lease")
     rel.add_argument("--worker")
     rel.add_argument("--force", action="store_true")
-    rel.add_argument(
-        "--keep-watch",
-        action="store_true",
-        help="do not close watch pane",
-    )
     rel.set_defaults(func=cmd_release)
-
-    w = sub.add_parser(
-        "watch",
-        help="split agent pane and run observe_mirror viewer",
-        parents=[shared],
-    )
-    w.add_argument("--lease")
-    w.add_argument("--worker")
-    w.add_argument(
-        "--agent-pane",
-        help="navigator herdr pane id (default: HERDR_PANE_ID / pane current)",
-    )
-    w.add_argument(
-        "--herdr-session",
-        default=None,
-        help="exact herdr session name (or HERDR_SESSION); required with socket if ambiguous",
-    )
-    w.add_argument(
-        "--herdr-socket",
-        default=None,
-        help="exact herdr socket path (or HERDR_SOCKET_PATH); fail closed if missing",
-    )
-    w.add_argument(
-        "--ratio",
-        type=float,
-        default=None,
-        help=(
-            "herdr first-child fraction (direction=right → agent left). "
-            "Default 0.37 (agent 37%% / browser 63%%)."
-        ),
-    )
-    w.add_argument(
-        "--ready-timeout",
-        type=float,
-        default=None,
-        help="seconds to wait for CDP + non-null active_target_id (default 20)",
-    )
-    w.add_argument(
-        "--direction",
-        default="right",
-        choices=["right", "down"],
-    )
-    _add_watch_input_flag(w)
-    _add_viewport_flags(w)
-    w.set_defaults(func=cmd_watch)
-
-    uw = sub.add_parser(
-        "unwatch", help="close watch pane; keep lease", parents=[shared]
-    )
-    uw.add_argument("--lease")
-    uw.add_argument("--worker")
-    uw.add_argument(
-        "--keep-pane",
-        action="store_true",
-        help="unbind only; do not close pane",
-    )
-    uw.set_defaults(func=cmd_unwatch)
 
     rp = sub.add_parser(
         "reap",
-        help=(
-            "reap expired auto-reap-eligible leases "
-            "(one_shot|expiring|auto_reap); --lease forces one id"
-        ),
+        help="reap expired auto-reap-eligible leases; --lease forces one id",
         parents=[shared],
     )
-    rp.add_argument(
-        "--lease",
-        help="force-reap one lease id (bypasses auto-reap eligibility)",
-    )
+    rp.add_argument("--lease", help="force-reap one lease id")
     rp.add_argument("--dry-run", action="store_true")
     rp.set_defaults(func=cmd_reap)
 
-    mx = sub.add_parser(
-        "mark-exit",
-        help="navigator exited without release — mark expiring for TTL reap",
-        parents=[shared],
-    )
+    mx = sub.add_parser("mark-exit", help="mark lease expiring for TTL reap", parents=[shared])
     mx.add_argument("--lease", required=True)
     mx.add_argument("--ttl", type=float, default=None)
     mx.set_defaults(func=cmd_mark_exit)
@@ -638,224 +396,17 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("launch", "spawn"):
         lp = sub.add_parser(
             name,
-            help=(
-                "acquire (+ optional --watch) and print navigator env JSON "
-                "(env contract only; prefer 'navigator spawn' to start a pane)"
-            ),
+            help="acquire and print env JSON (cdp_url + lease id)",
             parents=[shared],
         )
         _add_profile_flag(lp)
         _add_launch_selector_flags(lp, kind_required=False, suppress_defaults=True)
-        lp.add_argument("--owner", default="operator")
-        lp.add_argument(
-            "--mode",
-            default="persistent",
-            choices=["persistent", "one_shot"],
-            help="persistent: orchestrator releases; one_shot: shorter TTL + auto-reap",
-        )
-        lp.add_argument("--ttl", type=float, default=None)
-        lp.add_argument(
-            "--auto-reap",
-            action="store_true",
-            help=(
-                "mark lease auto-reap eligible for scheduled browserctl reap "
-                "(one_shot and expiring leases are already eligible)"
-            ),
-        )
-        lp.add_argument(
-            "--watch",
-            action="store_true",
-            help="also split watch pane for observe_mirror",
-        )
-        lp.add_argument("--agent-pane")
-        lp.add_argument("--herdr-session", default=None)
-        lp.add_argument("--herdr-socket", default=None)
-        lp.add_argument(
-            "--ratio",
-            type=float,
-            default=None,
-            help=(
-                "with --watch: herdr first-child fraction "
-                "(default 0.37 → agent 37%% / browser 63%%)"
-            ),
-        )
-        lp.add_argument(
-            "--ready-timeout",
-            type=float,
-            default=None,
-            help="with --watch: readiness wait seconds (default 20)",
-        )
-        _add_watch_input_flag(lp, with_watch_prefix=True)
-        _add_viewport_flags(lp, with_watch_prefix=True)
+        _add_lease_flags(lp)
         lp.set_defaults(func=cmd_launch)
 
-    # navigator <subcommand> — orchestrator-only resource lifecycle
-    nav = sub.add_parser(
-        "navigator",
-        help=(
-            "orchestrator navigator lifecycle: spawn (lease+pane+bind), "
-            "cleanup (close+release), status"
-        ),
-        parents=[shared],
-    )
-    nsub = nav.add_subparsers(dest="navigator_cmd", required=True)
-
-    nsp = nsub.add_parser(
-        "spawn",
-        help=(
-            "dedicated tab (default) + lease + navigator via herdr-agent-ctl "
-            "(split=none) + binding + optional watch; one structured receipt"
-        ),
-        parents=[shared],
-    )
-    _add_profile_flag(nsp)
-    _add_launch_selector_flags(nsp, kind_required=False, suppress_defaults=True)
-    nsp.add_argument("--owner", default="operator")
-    nsp.add_argument(
-        "--mode",
-        default="persistent",
-        choices=["persistent", "one_shot"],
-        help=(
-            "browser lease mode; one_shot → shorter TTL and scheduled-reap "
-            "eligible (crash backstop). Prefer one_shot for finite navigator jobs"
-        ),
-    )
-    nsp.add_argument("--ttl", type=float, default=None)
-    nsp.add_argument(
-        "--auto-reap",
-        action="store_true",
-        help=(
-            "mark lease auto-reap eligible for scheduled browserctl reap "
-            "(one_shot already eligible; use with persistent for finite jobs)"
-        ),
-    )
-    nsp.add_argument(
-        "--name",
-        default=None,
-        help="navigator agent name (default: nav-<lease>)",
-    )
-    nsp.add_argument(
-        "--model",
-        default=None,
-        help="optional model override for navigator pane (default: profile default)",
-    )
-    nsp.add_argument(
-        "--thinking",
-        default=None,
-        choices=["high", "xhigh", "medium", "low", "minimal"],
-    )
-    nsp.add_argument(
-        "--split",
-        default="none",
-        choices=["none", "right", "down"],
-        help=(
-            "herdr-agent-ctl pane placement (default none). "
-            "Default topology auto-creates a dedicated tab and requires none; "
-            "non-none only with explicit --tab (advanced, geometry not guaranteed)"
-        ),
-    )
-    nsp.add_argument(
-        "--navigator-lifecycle",
-        default="persistent",
-        choices=["one_shot", "persistent"],
-        help="navigator agent lifecycle passed to herdr-agent-ctl",
-    )
-    nsp.add_argument(
-        "--workspace",
-        default=None,
-        help="target workspace id (default: current/ambient workspace)",
-    )
-    nsp.add_argument(
-        "--tab",
-        default=None,
-        help=(
-            "advanced: use existing caller-owned tab (owns_tab=false). "
-            "Default omits --tab and creates a dedicated tab so navigator is "
-            "tab root at fullscreen ~1920x1080 (fixed viewport 1150x902 basis). "
-            "Exact default geometry is NOT guaranteed in an arbitrary occupied tab"
-        ),
-    )
-    nsp.add_argument(
-        "--agent-ctl",
-        default=None,
-        help="path to herdr-agent-ctl (or set BROWSERCTL_HERDR_AGENT_CTL)",
-    )
-    nsp.add_argument(
-        "--watch",
-        action="store_true",
-        help="open observe_mirror watch after navigator pane exists",
-    )
-    nsp.add_argument(
-        "--agent-pane",
-        default=None,
-        help="override pane to split for --watch (default: navigator pane)",
-    )
-    nsp.add_argument("--herdr-session", default=None)
-    nsp.add_argument("--herdr-socket", default=None)
-    nsp.add_argument(
-        "--ratio",
-        type=float,
-        default=None,
-        help="with --watch: herdr first-child fraction (default 0.37)",
-    )
-    nsp.add_argument(
-        "--ready-timeout",
-        type=float,
-        default=None,
-        help="with --watch: readiness wait seconds (default 20)",
-    )
-    _add_watch_input_flag(nsp, with_watch_prefix=True)
-    _add_viewport_flags(nsp, with_watch_prefix=True)
-    nsp.set_defaults(func=cmd_navigator_spawn)
-
-    ncl = nsub.add_parser(
-        "cleanup",
-        help=(
-            "close navigator + prove watch closed + close owned tab + "
-            "release lease; idempotent, safe for finally"
-        ),
-        parents=[shared],
-    )
-    ncl.add_argument("--lease", default=None, help="lease id")
-    ncl.add_argument(
-        "--name",
-        default=None,
-        help="navigator binding name or pane id",
-    )
-    ncl.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "if browser release completes: terminal forced settlement "
-            "(binding cleared, ok/settled true, navigator_unconfirmed warning) "
-            "even when navigator/owned-tab close lacks evidence"
-        ),
-    )
-    ncl.add_argument(
-        "--keep-watch",
-        action="store_true",
-        help="do not close watch pane during release",
-    )
-    ncl.add_argument(
-        "--skip-navigator-close",
-        action="store_true",
-        help="only release lease/watch (navigator already closed)",
-    )
-    ncl.set_defaults(func=cmd_navigator_cleanup)
-
-    nst = nsub.add_parser(
-        "status",
-        help="show lease↔navigator binding",
-        parents=[shared],
-    )
-    nst.add_argument("--lease", default=None)
-    nst.add_argument("--name", default=None)
-    nst.set_defaults(func=cmd_navigator_status)
-
-    # profiles <subcommand>
     prof = sub.add_parser(
         "profiles",
-        help="named persistent profile registry (launch selector + site associations)",
+        help="named profile registry (launch selector + site associations)",
         parents=[shared],
     )
     psub = prof.add_subparsers(dest="profiles_cmd", required=True)
@@ -864,102 +415,44 @@ def build_parser() -> argparse.ArgumentParser:
     pl.set_defaults(func=cmd_profiles_list)
 
     ps = psub.add_parser("show", help="show one named profile", parents=[shared])
-    ps.add_argument("name", help="stable profile name")
+    ps.add_argument("name")
     ps.set_defaults(func=cmd_profiles_show)
 
-    pr = psub.add_parser(
-        "register",
-        help="register/update launch selector for a profile name",
-        parents=[shared],
-    )
-    pr.add_argument("name", help="stable profile name (e.g. coal-hattie)")
+    pr = psub.add_parser("register", help="register/update a named face", parents=[shared])
+    pr.add_argument("name")
     _add_launch_selector_flags(pr, kind_required=True)
-    pr.add_argument(
-        "--description",
-        default=None,
-        help="required face description on new register; --replace may keep existing",
-    )
-    pr.add_argument(
-        "--notes",
-        default=None,
-        help="optional non-secret operator notes",
-    )
-    pr.add_argument(
-        "--egress",
-        default=None,
-        help="launch property: direct | vpn | JSON {type:vpn,country?,city?}",
-    )
-    pr.add_argument(
-        "--replace",
-        action="store_true",
-        help="overwrite launch if name already exists (keeps associations)",
-    )
+    pr.add_argument("--description", default=None, help="required on new register")
+    pr.add_argument("--notes", default=None)
+    pr.add_argument("--egress", default=None, help="direct | vpn | JSON {type:vpn,…}")
+    pr.add_argument("--replace", action="store_true")
     pr.set_defaults(func=cmd_profiles_register)
 
-    pa = psub.add_parser(
-        "associate",
-        help="associate profile with site and optional account label",
-        parents=[shared],
-    )
-    pa.add_argument("name", help="registered profile name")
-    pa.add_argument("site", help="site key (e.g. x.ai, cpa-manager)")
-    pa.add_argument(
-        "account",
-        nargs="?",
-        default=None,
-        help="optional account label (email/handle; not a secret)",
-    )
+    pa = psub.add_parser("associate", help="associate profile with site[/account]", parents=[shared])
+    pa.add_argument("name")
+    pa.add_argument("site")
+    pa.add_argument("account", nargs="?", default=None)
     pa.set_defaults(func=cmd_profiles_associate)
 
-    pv = psub.add_parser(
-        "resolve",
-        help="exact resolve site[/account] → launch argv (never fuzzy; no browser start)",
-        parents=[shared],
-    )
-    pv.add_argument("site", help="site key to resolve")
-    pv.add_argument(
-        "--account",
-        default=None,
-        help="optional exact account label",
-    )
+    pv = psub.add_parser("resolve", help="exact resolve site[/account] (no start)", parents=[shared])
+    pv.add_argument("site")
+    pv.add_argument("--account", default=None)
     pv.set_defaults(func=cmd_profiles_resolve)
 
-    pcards = psub.add_parser(
-        "cards",
-        help="markdown face cards for every named profile (navigator inject)",
-        parents=[shared],
-    )
+    pcards = psub.add_parser("cards", help="markdown face cards", parents=[shared])
     pcards.set_defaults(func=cmd_profiles_cards)
 
-    pcard = psub.add_parser(
-        "card",
-        help="markdown face card for one named profile",
-        parents=[shared],
-    )
-    pcard.add_argument("name", help="registered profile name")
+    pcard = psub.add_parser("card", help="one face card", parents=[shared])
+    pcard.add_argument("name")
     pcard.set_defaults(func=cmd_profiles_card)
 
-    pst = psub.add_parser(
-        "stamp",
-        help="set last_verified_at to now (ISO Z)",
-        parents=[shared],
-    )
-    pst.add_argument("name", help="registered profile name")
+    pst = psub.add_parser("stamp", help="set last_verified_at = now", parents=[shared])
+    pst.add_argument("name")
     pst.set_defaults(func=cmd_profiles_stamp)
 
     return p
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    """Allow global flags before or after the subcommand.
-
-    argparse + parents does not reliably accept ``browserctl --json launch …``
-    when the same options also live on subparsers. Peel known globals and
-    re-attach them after the subcommand token.
-
-    For nested ``profiles <sub>`` / ``navigator <sub>``, globals attach after
-    the nested subcommand token (second position).
-    """
     if not argv:
         return argv
     globals_opts: list[str] = []
@@ -983,12 +476,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
         i += 1
     if not rest:
         return globals_opts
-    # Nested: profiles|navigator <sub> … → insert globals after both tokens
-    if (
-        rest[0] in ("profiles", "navigator")
-        and len(rest) >= 2
-        and not rest[1].startswith("-")
-    ):
+    if rest[0] == "profiles" and len(rest) >= 2 and not rest[1].startswith("-"):
         return [rest[0], rest[1], *globals_opts, *rest[2:]]
     return [rest[0], *globals_opts, *rest[1:]]
 
@@ -997,13 +485,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(_normalize_argv(raw))
-    if getattr(args, "func", None) in (cmd_acquire, cmd_launch, cmd_navigator_spawn):
+    if getattr(args, "func", None) in (cmd_acquire, cmd_launch):
         has_profile = bool(getattr(args, "profile", None))
         has_kind = getattr(args, "kind", None) is not None
         if not has_profile and not has_kind:
-            parser.error(
-                "acquire/launch/navigator spawn require --kind or --profile NAME"
-            )
+            parser.error("acquire/launch require --kind or --profile NAME")
         if has_profile:
             used = [
                 d
@@ -1011,18 +497,8 @@ def main(argv: list[str] | None = None) -> int:
                 if getattr(args, d, None) is not None
             ]
             if used:
-                flags = ", ".join(
-                    "--" + d.replace("_", "-") for d in used
-                )
-                parser.error(
-                    f"--profile excludes launch selector flags ({flags})"
-                )
-    if getattr(args, "func", None) is cmd_navigator_cleanup:
-        if not getattr(args, "lease", None) and not getattr(args, "name", None):
-            parser.error("navigator cleanup requires --lease or --name")
-    if getattr(args, "func", None) is cmd_navigator_status:
-        if not getattr(args, "lease", None) and not getattr(args, "name", None):
-            parser.error("navigator status requires --lease or --name")
+                flags = ", ".join("--" + d.replace("_", "-") for d in used)
+                parser.error(f"--profile excludes launch selector flags ({flags})")
     try:
         return int(args.func(args) or 0)
     except BrowserctlError as e:

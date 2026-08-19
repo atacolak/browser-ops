@@ -1,8 +1,7 @@
 """
-Lease / lifecycle manager.
+Lease manager: acquire → env → release/reap.
 
-Owns acquire → env publication → release/reap. Adapters start browsers;
-this module enforces one mutation lease per worker and TTL.
+One mutation lease per worker. Adapters start browsers.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from browserctl.paths import (
 )
 from browserctl.store import (
     base_lease,
-    delete_lease_record,
     find_active_lease_for_worker,
     is_auto_reap_eligible,
     is_expired,
@@ -31,20 +29,17 @@ from browserctl.store import (
     touch_lease,
     worker_mutex,
 )
-from browserctl import watch as watch_mod
 
 DEFAULT_TTL = 3600.0  # 1h
 DEFAULT_ONE_SHOT_TTL = 900.0  # 15m
 
-# Exclusive with profile_name (headless included so API cannot override headed).
 _SELECTOR_KEYS = frozenset(
-    "kind adapter email worker worker_id label cdp_port country city "
+    "kind adapter worker worker_id label cdp_port country city "
     "headed headless no_start attach_only".split()
 )
 
 
 def _apply_headed_headless(req: dict[str, Any]) -> None:
-    """Derive headless from headed; reject contradictions on every path."""
     if req.get("headed") is None:
         return
     headed = bool(req["headed"])
@@ -56,20 +51,17 @@ def _apply_headed_headless(req: dict[str, Any]) -> None:
 
 
 def _public_lease(lease: dict[str, Any]) -> dict[str, Any]:
-    """Return lease dict safe for agents (no secrets by construction)."""
     out = dict(lease)
-    # never echo raw adapter dumps that might grow secrets
     resources = dict(out.get("resources") or {})
     resources.pop("egress_info", None)
     out["resources"] = resources
     return out
 
 
-def _navigator_env(lease: dict[str, Any], *, state_root: Path) -> dict[str, str]:
+def _lease_env(lease: dict[str, Any], *, state_root: Path) -> dict[str, str]:
     env = dict(lease.get("env") or {})
     resources = lease.get("resources") or {}
     worker_id = lease.get("worker_id")
-    # Always publish target-state path for mirror coordination
     tsp = resources.get("target_state_path") or str(
         active_target_path(state_root, worker_id)
     )
@@ -110,8 +102,6 @@ class Manager:
         self.root = resolve_root(root)
         self.state_root = resolve_state_root(state_root, root=self.root)
 
-    # ── queries ──────────────────────────────────────────────────────────
-
     def list_leases(
         self,
         *,
@@ -145,7 +135,6 @@ class Manager:
                 self.state_root, worker_id, now=now
             )
             if not lease:
-                # fall back to any lease for worker
                 matches = [
                     L
                     for L in iter_leases(self.state_root)
@@ -176,10 +165,8 @@ class Manager:
         out["expired"] = is_expired(lease, now=now)
         out["live"] = live
         out["active_target"] = target
-        out["env"] = _navigator_env(lease, state_root=self.state_root)
+        out["env"] = _lease_env(lease, state_root=self.state_root)
         return out
-
-    # ── acquire / release ────────────────────────────────────────────────
 
     def acquire(self, request: dict[str, Any]) -> dict[str, Any]:
         req = dict(request)
@@ -209,8 +196,6 @@ class Manager:
             req.update(launch)
             if "worker" in launch:
                 req["worker_id"] = launch["worker"]
-            # Named scratch/adhoc: finite stable pool — derive worker when unset
-            # so re-launch reuses dirs (never mint unique tokens → no wipe_v1).
             kind_from_profile = str(launch.get("kind") or "").strip().lower()
             if kind_from_profile in ("scratch", "adhoc"):
                 if not (req.get("worker_id") or req.get("worker")):
@@ -221,7 +206,7 @@ class Manager:
         kind = (req.get("kind") or req.get("adapter") or "").strip().lower()
         if not kind:
             raise InvalidRequest(
-                "acquire requires --kind or --profile (xai|scratch|vpn)",
+                "acquire requires --kind or --profile (scratch|vpn)",
             )
         if kind in ("default",):
             raise InvalidRequest("refusing managed default kind")
@@ -240,8 +225,6 @@ class Manager:
         req["root"] = str(self.root)
         req["state_root"] = str(self.state_root)
 
-        # Fast path: if caller already knows worker_id, serialize under that
-        # mutex and refuse before starting anything new.
         known_worker = (req.get("worker_id") or req.get("worker") or "").strip()
         if known_worker and known_worker != "default":
             with worker_mutex(self.state_root, known_worker):
@@ -251,9 +234,6 @@ class Manager:
                         known_worker, holder=_public_lease(existing)
                     )
 
-        # Adapters may start browsers. For xAI, acquire is always
-        # attached_existing (shared identity_ops lifecycle) so conflict must
-        # NEVER stop the winner browser.
         acquired = adapter.acquire(req)
         worker_id = acquired["worker_id"]
         if not worker_id or worker_id == "default":
@@ -263,19 +243,12 @@ class Manager:
             )
 
         meta = dict(acquired.get("meta") or {})
-        kind_name = (acquired.get("kind") or kind or "").lower()
-        adapter_name = (acquired.get("adapter") or kind_name).lower()
-        # xAI identity_ops is shared; never force-stop on conflict.
-        if adapter_name == "xai" or kind_name == "xai":
-            meta["attached_existing"] = True
         attached = bool(meta.get("attached_existing"))
 
         with worker_mutex(self.state_root, worker_id):
             existing = find_active_lease_for_worker(self.state_root, worker_id)
             if existing:
-                # NEVER stop winner / shared browsers. Only roll back resources
-                # we uniquely started (scratch cold start without attach flag).
-                if not attached and adapter_name not in ("xai",):
+                if not attached:
                     try:
                         adapter.release(
                             {
@@ -304,8 +277,6 @@ class Manager:
             )
             if profile_name:
                 lease["profile_name"] = profile_name
-            # Opt-in scheduled reaper target for persistent leases (one_shot
-            # and expiring are always eligible; see is_auto_reap_eligible).
             if req.get("auto_reap") is True:
                 lease["auto_reap"] = True
             Path(resources["target_state_path"]).parent.mkdir(
@@ -313,7 +284,7 @@ class Manager:
             )
             save_lease(self.state_root, lease)
 
-        env = _navigator_env(lease, state_root=self.state_root)
+        env = _lease_env(lease, state_root=self.state_root)
         lease["env"] = env
         save_lease(self.state_root, lease)
 
@@ -322,7 +293,6 @@ class Manager:
             "lease": _public_lease(lease),
             "env": env,
             "spawn": {
-                "profile": "navigator",
                 "cwd": str(self.root),
                 "env": env,
                 "lease_id": lease["lease_id"],
@@ -336,7 +306,6 @@ class Manager:
         lease_id: str | None = None,
         worker_id: str | None = None,
         force: bool = False,
-        keep_watch: bool = False,
     ) -> dict[str, Any]:
         if lease_id:
             lease = require_lease(self.state_root, lease_id)
@@ -349,7 +318,6 @@ class Manager:
 
         wid = lease["worker_id"]
         with worker_mutex(self.state_root, wid):
-            # reload under lock
             lease = require_lease(self.state_root, lease["lease_id"])
             if lease.get("status") in ("released", "reaped"):
                 return {
@@ -357,26 +325,6 @@ class Manager:
                     "idempotent": True,
                     "lease": _public_lease(lease),
                 }
-
-            watch_result = None
-            watch_incomplete = False
-            if lease.get("watch") and not keep_watch:
-                try:
-                    watch_result = watch_mod.stop_watch(lease, close=True)
-                except Exception as e:
-                    watch_result = {
-                        "closed": False,
-                        "error": str(e),
-                        "watch_pane_id": (lease.get("watch") or {}).get(
-                            "watch_pane_id"
-                        ),
-                    }
-                lease["last_watch_stop"] = watch_result
-                if watch_result.get("closed"):
-                    lease["watch"] = None
-                else:
-                    # Keep watch binding so a later release/unwatch can retry.
-                    watch_incomplete = True
 
             adapter = get_adapter(lease.get("adapter") or lease.get("kind") or "scratch")
             try:
@@ -386,13 +334,10 @@ class Manager:
                     raise
                 release_result = {"status": "error", "error": str(e), "force": True}
 
-            # Incomplete wipe/process cleanup stays retryable (non-terminal).
-            # Unconfirmed watch close is also incomplete (do not claim settled).
             release_status = str((release_result or {}).get("status") or "")
             incomplete = (
                 bool((release_result or {}).get("cleanup_incomplete"))
                 or release_status in ("partial", "error")
-                or watch_incomplete
             )
 
             lease = touch_lease(lease)
@@ -401,8 +346,6 @@ class Manager:
                 lease["status"] = "expiring"
                 meta = dict(lease.get("meta") or {})
                 meta["release_incomplete"] = True
-                if watch_incomplete:
-                    meta["watch_close_incomplete"] = True
                 if (release_result or {}).get("cleanup_error"):
                     meta["release_cleanup_error"] = release_result["cleanup_error"]
                 lease["meta"] = meta
@@ -412,7 +355,6 @@ class Manager:
                 meta = dict(lease.get("meta") or {})
                 meta.pop("release_incomplete", None)
                 meta.pop("release_cleanup_error", None)
-                meta.pop("watch_close_incomplete", None)
                 lease["meta"] = meta
             save_lease(self.state_root, lease)
 
@@ -420,153 +362,8 @@ class Manager:
             "ok": not incomplete,
             "lease": _public_lease(lease),
             "release": release_result,
-            "watch_stop": watch_result,
             "retryable": incomplete,
         }
-
-    # ── watch ────────────────────────────────────────────────────────────
-
-    def watch(
-        self,
-        *,
-        lease_id: str | None = None,
-        worker_id: str | None = None,
-        agent_pane: str | None = None,
-        ratio: float | None = None,
-        direction: str = "right",
-        herdr_session: str | None = None,
-        herdr_socket: str | None = None,
-        ready_timeout_s: float | None = None,
-        watch_input: str | None = None,
-        viewport: str | None = None,
-        viewport_width: int | float | str | None = None,
-        viewport_height: int | float | str | None = None,
-        **watch_extras: Any,
-    ) -> dict[str, Any]:
-        """Open observe_mirror watch.
-
-        ``**watch_extras`` is forwarded to ``start_watch`` so parallel workers
-        (e.g. viewport modes) can land new kwargs without signature thrash.
-        Unknown keys are filtered against ``start_watch`` parameters.
-        """
-        if lease_id:
-            lease = require_lease(self.state_root, lease_id)
-        elif worker_id:
-            lease = find_active_lease_for_worker(self.state_root, worker_id)
-            if not lease:
-                raise LeaseNotFound(worker_id=worker_id)
-        else:
-            raise InvalidRequest("watch requires --lease or --worker")
-
-        if lease.get("status") not in ("active", "acquired", "expiring"):
-            raise InvalidRequest(
-                f"cannot watch lease in status {lease.get('status')!r}"
-            )
-
-        requested_input = watch_mod.normalize_watch_input(watch_input)
-
-        # idempotent only when the existing pane has the requested policy.
-        existing = lease.get("watch") or {}
-        if existing.get("watch_pane_id"):
-            existing_input = watch_mod.normalize_watch_input(existing.get("watch_input"))
-            if existing_input != requested_input:
-                raise InvalidRequest(
-                    "watch already exists with a different input policy; "
-                    "unwatch before changing --watch-input",
-                    existing_watch_input=existing_input,
-                    requested_watch_input=requested_input,
-                )
-            return {
-                "ok": True,
-                "idempotent": True,
-                "watch": existing,
-                "lease_id": lease["lease_id"],
-            }
-
-        ready_kwargs: dict[str, Any] = {}
-        if ready_timeout_s is not None:
-            ready_kwargs["ready_timeout_s"] = float(ready_timeout_s)
-
-        # Forward known start_watch extras (viewport*, etc.) without hardcoding.
-        import inspect
-
-        start_params = set(inspect.signature(watch_mod.start_watch).parameters)
-        for key, val in watch_extras.items():
-            if key in start_params and val is not None:
-                ready_kwargs[key] = val
-
-        watch_rec = watch_mod.start_watch(
-            lease,
-            state_root=self.state_root,
-            agent_pane=agent_pane,
-            ratio=watch_mod.normalize_ratio(ratio),
-            direction=direction,
-            herdr_session=herdr_session,
-            herdr_socket=herdr_socket,
-            watch_input=requested_input,
-            viewport=viewport,
-            viewport_width=viewport_width,
-            viewport_height=viewport_height,
-            **ready_kwargs,
-        )
-        lease = touch_lease(lease)
-        lease["watch"] = watch_rec
-        resources = dict(lease.get("resources") or {})
-        resources["target_state_path"] = watch_rec.get(
-            "target_state_path", resources.get("target_state_path")
-        )
-        lease["resources"] = resources
-        save_lease(self.state_root, lease)
-        return {
-            "ok": True,
-            "watch": watch_rec,
-            "lease_id": lease["lease_id"],
-            "worker_id": lease["worker_id"],
-            "mirror_env": watch_rec.get("env"),
-        }
-
-    def unwatch(
-        self,
-        *,
-        lease_id: str | None = None,
-        worker_id: str | None = None,
-        close: bool = True,
-    ) -> dict[str, Any]:
-        if lease_id:
-            lease = require_lease(self.state_root, lease_id)
-        elif worker_id:
-            lease = find_active_lease_for_worker(self.state_root, worker_id)
-            if not lease:
-                raise LeaseNotFound(worker_id=worker_id)
-        else:
-            raise InvalidRequest("unwatch requires --lease or --worker")
-
-        if not lease.get("watch"):
-            return {
-                "ok": True,
-                "idempotent": True,
-                "lease_id": lease["lease_id"],
-                "watch": None,
-            }
-
-        result = watch_mod.stop_watch(lease, close=close)
-        lease = touch_lease(lease)
-        lease["last_watch_stop"] = result
-        # Only drop the binding when close was not requested, or close has evidence.
-        if not close or result.get("closed"):
-            lease["watch"] = None
-            ok = True
-        else:
-            ok = False
-        save_lease(self.state_root, lease)
-        return {
-            "ok": ok,
-            "lease_id": lease["lease_id"],
-            "unwatch": result,
-            "retryable": bool(close) and not result.get("closed"),
-        }
-
-    # ── reap / mark ──────────────────────────────────────────────────────
 
     def mark_expiring(
         self,
@@ -574,7 +371,6 @@ class Manager:
         lease_id: str,
         ttl_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Navigator exit without release: keep resources, shorten/mark TTL."""
         lease = require_lease(self.state_root, lease_id)
         if lease.get("status") in ("released", "reaped"):
             return {"ok": True, "idempotent": True, "lease": _public_lease(lease)}
@@ -587,7 +383,7 @@ class Manager:
             lease = touch_lease(lease, ttl_seconds=ttl)
             lease["status"] = "expiring"
             lease["meta"] = dict(lease.get("meta") or {})
-            lease["meta"]["navigator_exited"] = True
+            lease["meta"]["exited"] = True
             save_lease(self.state_root, lease)
         return {"ok": True, "lease": _public_lease(lease)}
 
@@ -598,12 +394,6 @@ class Manager:
         now: float | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Reap expired auto-reap-eligible leases (or one forced id). Idempotent.
-
-        Crash backstop for orchestrator/navigator jobs that never reached
-        cleanup. Scheduled runs skip default persistent active leases; see
-        ``is_auto_reap_eligible``. ``force_lease_id`` bypasses that gate.
-        """
         now = now if now is not None else time.time()
         reaped: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -631,8 +421,6 @@ class Manager:
                     continue
                 if not is_expired(lease, now=now):
                     continue
-                # Scheduled reap must not kill intentionally long-lived
-                # persistent sessions past the observability TTL stamp.
                 if not is_auto_reap_eligible(lease):
                     skipped.append(
                         {
@@ -659,50 +447,16 @@ class Manager:
                 continue
             try:
                 lid = lease["lease_id"]
-                # Navigator-bound leases must settle pane/tab/binding via
-                # navigator cleanup (force). Avoid recursion: cleanup releases
-                # the browser; reap only orchestrates + stamps reaped.
-                from browserctl.navigator import load_binding
-
-                binding = load_binding(self.state_root, lid)
-                nav_meta = (lease.get("meta") or {}).get("navigator")
-                used_nav_cleanup = bool(binding or nav_meta)
-                if used_nav_cleanup:
-                    result = self.navigator_cleanup(
-                        lease_id=lid,
-                        force=True,
-                        _from_reap=True,
+                result = self.release(lease_id=lid, force=True)
+                if result.get("retryable") or not result.get("ok", True):
+                    skipped.append(
+                        {
+                            "lease_id": lid,
+                            "reason": "release_incomplete",
+                            "release": result.get("release"),
+                        }
                     )
-                    if result.get("retryable") or not result.get("ok", True):
-                        skipped.append(
-                            {
-                                "lease_id": lid,
-                                "reason": "navigator_cleanup_incomplete",
-                                "cleanup": {
-                                    "ok": result.get("ok"),
-                                    "settled": result.get("settled"),
-                                    "forced": result.get("forced"),
-                                    "proof": result.get("proof"),
-                                },
-                            }
-                        )
-                        continue
-                else:
-                    result = self.release(
-                        lease_id=lid,
-                        force=True,
-                    )
-                    # Only terminal-reap when release completed cleanup. Incomplete
-                    # ephemeral wipes stay expiring/retryable for a later pass.
-                    if result.get("retryable") or not result.get("ok", True):
-                        skipped.append(
-                            {
-                                "lease_id": lid,
-                                "reason": "release_incomplete",
-                                "release": result.get("release"),
-                            }
-                        )
-                        continue
+                    continue
                 with worker_mutex(self.state_root, lease["worker_id"]):
                     cur = load_lease(self.state_root, lid)
                     if cur and cur.get("status") == "released":
@@ -710,18 +464,8 @@ class Manager:
                         cur["reaped_at"] = time.strftime(
                             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)
                         )
-                        if used_nav_cleanup:
-                            meta = dict(cur.get("meta") or {})
-                            meta["reaped_via"] = "navigator_cleanup"
-                            cur["meta"] = meta
                         save_lease(self.state_root, cur)
-                        pub = _public_lease(cur)
-                        if used_nav_cleanup:
-                            pub["navigator_cleanup"] = {
-                                "forced": bool(result.get("forced")),
-                                "settled": bool(result.get("settled")),
-                            }
-                        reaped.append(pub)
+                        reaped.append(_public_lease(cur))
                     elif cur:
                         skipped.append(
                             {
@@ -749,79 +493,4 @@ class Manager:
         }
 
     def launch(self, request: dict[str, Any]) -> dict[str, Any]:
-        """
-        Convenient acquire (+ optional watch) returning navigator spawn env.
-
-        Alias surface for orchestrators: browserctl launch|spawn ...
-        Note: this returns the env *contract* only. To actually start a
-        navigator pane use ``navigator spawn`` (orchestrator-only seam).
-        """
-        result = self.acquire(request)
-        if request.get("watch"):
-            try:
-                ready_timeout = request.get("ready_timeout")
-                if ready_timeout is None:
-                    ready_timeout = request.get("ready_timeout_s")
-                # Forward optional watch extras (viewport*) without hardcoding.
-                watch_kwargs: dict[str, Any] = {
-                    "lease_id": result["lease"]["lease_id"],
-                    "agent_pane": request.get("agent_pane"),
-                    "ratio": request.get("ratio"),
-                    "herdr_session": request.get("herdr_session"),
-                    "herdr_socket": request.get("herdr_socket"),
-                    "ready_timeout_s": (
-                        float(ready_timeout) if ready_timeout is not None else None
-                    ),
-                }
-                for key in (
-                    "viewport",
-                    "viewport_width",
-                    "viewport_height",
-                    "direction",
-                ):
-                    if key in request and request.get(key) is not None:
-                        watch_kwargs[key] = request.get(key)
-                w = self.watch(**watch_kwargs)
-                result["watch"] = w.get("watch")
-                result["mirror_env"] = w.get("mirror_env")
-            except Exception as e:
-                result["watch_error"] = str(e)
-        return result
-
-    # ── navigator lifecycle (orchestrator-only) ──────────────────────────
-
-    def navigator_spawn(self, request: dict[str, Any]) -> dict[str, Any]:
-        from browserctl.navigator import NavigatorLifecycle
-
-        return NavigatorLifecycle(self).spawn(request)
-
-    def navigator_cleanup(
-        self,
-        *,
-        lease_id: str | None = None,
-        name: str | None = None,
-        force: bool = False,
-        keep_watch: bool = False,
-        skip_navigator_close: bool = False,
-        _from_reap: bool = False,
-    ) -> dict[str, Any]:
-        from browserctl.navigator import NavigatorLifecycle
-
-        return NavigatorLifecycle(self).cleanup(
-            lease_id=lease_id,
-            name=name,
-            force=force,
-            keep_watch=keep_watch,
-            skip_navigator_close=skip_navigator_close,
-            _from_reap=_from_reap,
-        )
-
-    def navigator_status(
-        self,
-        *,
-        lease_id: str | None = None,
-        name: str | None = None,
-    ) -> dict[str, Any]:
-        from browserctl.navigator import NavigatorLifecycle
-
-        return NavigatorLifecycle(self).status(lease_id=lease_id, name=name)
+        return self.acquire(request)

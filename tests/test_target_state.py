@@ -142,5 +142,5 @@ def test_concurrent_publish_monotonic_processes(tmp_path: Path):
 
 
 def test_default_path_layout(tmp_path: Path):
-    p = default_target_path(tmp_path, "xai-demo")
-    assert p == tmp_path / "xai-demo" / "control" / "active-target.json"
+    p = default_target_path(tmp_path, "scratch-demo")
+    assert p == tmp_path / "scratch-demo" / "control" / "active-target.json"

@@ -14,13 +14,12 @@ __pycache__/
 
 # Cloak / Chromium user-data (never commit cookies/caches).
 # Tracked under profiles/: PROFILES.json + docs only.
-# Runtime (gitignored): IDENTITIES.json, API_STAGES.json, profile dirs.
 profiles/**
 !profiles/BINDING.md
 !profiles/PROFILES.json
 !profiles/README.md
 
-# runtime identity + stage ledgers (bootstrapped locally by identity_ops)
+# leftover runtime ledgers (if present from older trees)
 profiles/IDENTITIES.json
 profiles/API_STAGES.json
 profiles/.PROFILES.json.lock

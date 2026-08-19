@@ -169,8 +169,7 @@ def is_auto_reap_eligible(lease: dict[str, Any]) -> bool:
 
     Persistent active leases keep a wall-clock ``expires_at`` for observability
     and conflict messaging, but they are **not** automatic reaper targets.
-    Operators own ``navigator cleanup`` (or low-level ``release``) for them.
-
+    Operators own ``release`` for them.
     Auto-reap only when the lease was intended for automatic expiration:
 
     - ``mode == "one_shot"``

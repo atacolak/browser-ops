@@ -286,7 +286,7 @@ def test_mark_expiring_shortens_ttl(mgr):
     lease = load_lease(state, lid)
     assert lease is not None
     assert lease["ttl_seconds"] == 30
-    assert lease["meta"].get("navigator_exited") is True
+    assert lease["meta"].get("exited") is True
 
 
 def test_list_hides_terminal(mgr):
@@ -370,54 +370,7 @@ def test_launch_contract_json_shape(mgr):
     assert out["ok"] is True
     assert "env" in out
     assert "spawn" in out
-    assert out["spawn"]["profile"] == "navigator"
+    assert out["spawn"]["lease_id"] == out["lease"]["lease_id"]
     assert out["spawn"]["env"]["BROWSER_HARNESS_WORKER"]
     assert out["lease"]["mode"] == "one_shot"
 
-
-def test_watch_binds_pane_ids(mgr):
-    m, _fake, state = mgr
-    out = m.acquire({"kind": "scratch", "owner": "a", "ttl": 120})
-    lid = out["lease"]["lease_id"]
-
-    fake_watch = {
-        "agent_pane_id": "w1:p1",
-        "watch_pane_id": "w1:p2",
-        "direction": "right",
-        "ratio": 0.25,
-        "env": {
-            "HERDR_BROWSER_MODE": "observe_mirror",
-            "HERDR_BROWSER_TARGET_STATE": "/tmp/t.json",
-            "HERDR_BROWSER_CDP_URL": "http://127.0.0.1:9301",
-        },
-        "target_state_path": "/tmp/t.json",
-        "cdp_url": "http://127.0.0.1:9301",
-    }
-    with mock.patch(
-        "browserctl.manager.watch_mod.start_watch", return_value=fake_watch
-    ):
-        w = m.watch(lease_id=lid, agent_pane="w1:p1")
-    assert w["ok"] is True
-    assert w["watch"]["watch_pane_id"] == "w1:p2"
-    assert w["mirror_env"]["HERDR_BROWSER_MODE"] == "observe_mirror"
-    lease = load_lease(state, lid)
-    assert lease is not None
-    assert lease["watch"]["agent_pane_id"] == "w1:p1"
-
-    # idempotent second watch
-    with mock.patch(
-        "browserctl.manager.watch_mod.start_watch",
-        side_effect=AssertionError("should not call"),
-    ):
-        w2 = m.watch(lease_id=lid)
-    assert w2.get("idempotent") is True
-
-    with mock.patch(
-        "browserctl.manager.watch_mod.stop_watch",
-        return_value={"closed": True, "watch_pane_id": "w1:p2"},
-    ):
-        u = m.unwatch(lease_id=lid)
-    assert u["ok"] is True
-    lease2 = load_lease(state, lid)
-    assert lease2 is not None
-    assert lease2["watch"] is None

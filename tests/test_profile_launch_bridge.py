@@ -26,26 +26,24 @@ class FakeAdapter:
     def acquire(self, request):
         self.starts.append(dict(request))
         kind = (request.get("kind") or "scratch").lower()
-        email = request.get("email")
         wid = (
             request.get("worker_id")
             or request.get("worker")
             or (f"scratch-{request['label']}-1" if request.get("label") else None)
-            or ("xai-worker-1" if kind == "xai" else "scratch-prof-1")
+            or "scratch-prof-1"
         )
         return {
             "worker_id": wid,
             "kind": kind if kind != "adhoc" else "scratch",
-            "adapter": "xai" if kind == "xai" else "scratch",
+            "adapter": "scratch",
             "resources": {
                 "worker_id": wid,
-                "email": email,
-                "cdp_port": 9222 if kind == "xai" else 9310,
-                "cdp_url": f"http://127.0.0.1:{9222 if kind == 'xai' else 9310}",
-                "daemon": "running" if kind == "xai" else "stopped",
+                "cdp_port": 9310,
+                "cdp_url": "http://127.0.0.1:9310",
+                "daemon": "stopped",
             },
             "env": {"BROWSER_HARNESS_WORKER": wid},
-            "meta": {"attached_existing": kind == "xai"},
+            "meta": {},
         }
 
     def release(self, lease, *, force=False):
@@ -86,15 +84,15 @@ def test_profile_stamp_and_headed(env):
 
 def test_manager_strict_exclusion_and_unknown(env):
     root, state = env
-    _reg(root, "coal-demo", {"kind": "xai", "email": "demo@example.com"})
+    _reg(root, "lab-demo", {"kind": "scratch", "label": "demo"})
     m = Manager(root=root, state_root=state)
     fake = FakeAdapter()
     with mock.patch("browserctl.manager.get_adapter", return_value=fake):
         with pytest.raises(InvalidRequest) as ei:
             m.acquire(
-                {"profile_name": "coal-demo", "email": "other@example.com", "owner": "o"}
+                {"profile_name": "lab-demo", "label": "other", "owner": "o"}
             )
-        assert "email" in ei.value.details["fields"]
+        assert "label" in ei.value.details["fields"]
         with pytest.raises(InvalidRequest):
             m.acquire(
                 {
@@ -119,13 +117,13 @@ def test_cli_profile_conflict_and_legacy(env, capsys):
                 str(root),
                 "profiles",
                 "register",
-                "coal-demo",
+                "lab-demo",
                 "--kind",
-                "xai",
-                "--email",
-                "demo@example.com",
+                "scratch",
+                "--label",
+                "demo",
                 "--description",
-                "coal-demo test face",
+                "lab-demo test face",
                 "--json",
             ]
         )
@@ -136,13 +134,13 @@ def test_cli_profile_conflict_and_legacy(env, capsys):
     base = ["--root", str(root), "--state-root", str(state)]
     with mock.patch("browserctl.manager.get_adapter", return_value=fake):
         assert (
-            main([*base, "launch", "--profile", "coal-demo", "--owner", "t", "--json"])
+            main([*base, "launch", "--profile", "lab-demo", "--owner", "t", "--json"])
             == 0
         )
         out = json.loads(capsys.readouterr().out)
-        assert out["lease"]["profile_name"] == "coal-demo"
-        assert out["env"]["BROWSERCTL_PROFILE_NAME"] == "coal-demo"
-        assert fake.starts[-1]["email"] == "demo@example.com"
+        assert out["lease"]["profile_name"] == "lab-demo"
+        assert out["env"]["BROWSERCTL_PROFILE_NAME"] == "lab-demo"
+        assert fake.starts[-1]["label"] == "demo"
 
         with pytest.raises(SystemExit) as se:
             main(
@@ -150,9 +148,9 @@ def test_cli_profile_conflict_and_legacy(env, capsys):
                     *base,
                     "launch",
                     "--profile",
-                    "coal-demo",
-                    "--email",
-                    "x@y.z",
+                    "lab-demo",
+                    "--label",
+                    "other",
                     "--json",
                 ]
             )

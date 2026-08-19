@@ -157,18 +157,6 @@ def test_live_like_publish_under_state_root_override(tmp_path: Path, monkeypatch
     assert Path(result["env"]["BROWSER_TARGET_STATE"]).exists()
 
 
-def test_identity_ops_env_forwards_ops_state(tmp_path: Path, monkeypatch):
-    import identity_ops
-
-    state = tmp_path / "state"
-    monkeypatch.setenv("BROWSER_OPS_STATE", str(state))
-    monkeypatch.delenv("BROWSER_TARGET_STATE", raising=False)
-    env = identity_ops._env_for("xai-demo")
-    assert env["BROWSER_OPS_STATE"] == str(state)
-    assert env["BROWSER_TARGET_STATE"] == str(
-        state / "xai-demo" / "control" / "active-target.json"
-    )
-
 
 def test_cloak_default_without_override_is_repo_state(monkeypatch):
     monkeypatch.delenv("BROWSER_TARGET_STATE", raising=False)
