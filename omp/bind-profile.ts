@@ -30,6 +30,9 @@ type SessionKey = object | string;
 
 type BindState = {
 	leaseId: string;
+	browserLeaseId?: string;
+	targetId?: string;
+	targetLeaseId?: string;
 	profile?: string;
 	root: string;
 	cdp: string;
@@ -172,7 +175,12 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 				text: `release failed lease=${state.leaseId}: ${released.raw.slice(0, 800)}`,
 			};
 		}
-		return { ok: true, text: `Released lease=${state.leaseId}.` };
+		return {
+			ok: true,
+			text: `Released target lease=${state.leaseId}` +
+				(state.targetId ? ` target=${state.targetId}` : "") +
+				". shared browser stays up if other target leases remain.",
+		};
 	}
 
 	return {
@@ -219,8 +227,10 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 							type: "text" as const,
 							text:
 								`Already bound lease=${existing.leaseId} profile=${existing.profile || "(scratch)"} ` +
-								`cdp_url=${existing.cdp}. Open with app.cdp_url=${existing.cdp} (no app.path, no app.relay). ` +
-								`Lease stays up after yield. release=true only to close it now.`,
+								`cdp_url=${existing.cdp}` +
+								(existing.targetId ? ` target=${existing.targetId}` : "") +
+								`. Open with app.cdp_url=${existing.cdp} (no app.path, no app.relay). ` +
+								`This session owns only its target. release=true drops this target, not sibling navigators.`,
 						},
 					],
 				};
@@ -309,6 +319,9 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 
 			const state: BindState = {
 				leaseId,
+				browserLeaseId: String(env.BROWSERCTL_BROWSER_LEASE_ID || lease.browser_lease_id || ""),
+				targetId: String(env.BROWSERCTL_TARGET_ID || lease.target_id || ""),
+				targetLeaseId: String(env.BROWSERCTL_TARGET_LEASE_ID || leaseId),
 				profile: env.BROWSERCTL_PROFILE_NAME || (params.scratch ? undefined : used),
 				root,
 				cdp,
@@ -321,9 +334,13 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 					{
 						type: "text" as const,
 						text:
-							`Bound ${used}. lease=${leaseId} cdp_url=${cdp}. ` +
+							`Bound ${used}. lease=${leaseId}` +
+							(state.targetId ? ` target=${state.targetId}` : "") +
+							(state.browserLeaseId ? ` browser_lease=${state.browserLeaseId}` : "") +
+							` cdp_url=${cdp}. ` +
 							`Next: browser open with app.cdp_url=${cdp} (no app.path, no app.relay). ` +
-							`Lease stays up after yield for follow-ups. release=true only to close it now.`,
+							`Same profile may host other navigators on other targets. ` +
+							`release=true drops this target only.`,
 					},
 				],
 			};

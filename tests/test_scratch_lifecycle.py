@@ -200,8 +200,10 @@ def test_named_scratch_stable_pool(ops):
         assert (p / "s").read_text() == "k"
         o2 = m.acquire({"profile_name": "lab", "owner": "b", "ttl": 60})
         assert o2["lease"]["worker_id"] == "scratch-profile-lab"
-        with pytest.raises(LeaseConflict):
-            m.acquire({"profile_name": "lab", "owner": "c", "ttl": 60})
+        o3 = m.acquire({"profile_name": "lab", "owner": "c", "ttl": 60})
+        assert o3["lease"]["worker_id"] == "scratch-profile-lab"
+        assert o2["lease"]["target_id"] != o3["lease"]["target_id"]
+        m.release(lease_id=o3["lease"]["lease_id"])
         m.release(lease_id=o2["lease"]["lease_id"])
         pin = m.acquire({"profile_name": "pin", "owner": "d", "ttl": 30})
         assert pin["lease"]["worker_id"] == "scratch-pin"

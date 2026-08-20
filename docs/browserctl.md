@@ -31,7 +31,7 @@ Root: `--root` → `BROWSER_OPS_ROOT` → this checkout. State: `--state-root` �
 |---|---|
 | `list` | active leases (`--all` includes terminal) |
 | `status --lease ID \| --worker W` | lease + live adapter + active-target |
-| `acquire --kind scratch\|vpn …` | one mutation lease + start adapter |
+| `acquire --kind scratch\|vpn …` | start/join browser + mint target lease |
 | `release --lease ID` | stop resources; idempotent |
 | `reap` / `reap --lease ID` | crash-backstop for auto-reap-eligible expired leases; `--lease` force |
 | `mark-exit --lease ID` | mark a vanished lease expiring (TTL reap) |
@@ -102,7 +102,10 @@ Accountless resolve matches only accountless rows. Multi-match → `PROFILE_AMBI
 
 | Key | Meaning |
 |---|---|
-| `BROWSERCTL_LEASE_ID` | lease id |
+| `BROWSERCTL_LEASE_ID` | target lease id (release this) |
+| `BROWSERCTL_BROWSER_LEASE_ID` | browser/process lease |
+| `BROWSERCTL_TARGET_ID` | owned CDP target |
+| `BROWSERCTL_TARGET_LEASE_ID` | same as `BROWSERCTL_LEASE_ID` |
 | `BROWSER_HARNESS_WORKER` | daemon worker id |
 | `BROWSER_CDP_URL` | e.g. `http://127.0.0.1:9304` |
 | `BROWSER_TARGET_STATE` | `state/<worker>/control/active-target.json` |
@@ -114,12 +117,21 @@ Accountless resolve matches only accountless rows. Multi-match → `PROFILE_AMBI
 
 ## Lease laws
 
-1. **One mutation lease per worker.** Duplicate → `LEASE_CONFLICT`.
-2. **No managed `default`.**
-3. **No secrets** in lease JSON, target-state, or `PROFILES.json`.
-4. Persistent active leases stamp `expires_at` for observability; they are **not** auto-reaped.
-5. Auto-reap only: `mode=one_shot`, `status=expiring`, or explicit `--auto-reap`. `reap --lease ID` force-bypasses.
-6. Attached/existing runtimes (vpn attach): conflict must not stop the winner.
+1. **One browser/process lease per worker.** Many target leases may share that browser. At most one mutating owner per target.
+2. Compatible second acquire/bind **joins** and allocates a new target. Exclusive second browser lease → `LEASE_CONFLICT`. Owned target claim → `TARGET_CONFLICT`.
+3. **No managed `default`.**
+4. **No secrets** in lease JSON, target-state, `targets.json`, or `PROFILES.json`.
+5. Persistent **browser** leases stamp `expires_at` for observability; they are **not** auto-reaped. Target leases with `--auto-reap` / `expiring` / `one_shot` are.
+6. Auto-reap: `mode=one_shot`, `status=expiring`, or explicit `--auto-reap`. `reap --lease ID` force-bypasses. Reaping one target does not stop the browser while siblings remain.
+7. Attached/existing runtimes (vpn attach): join must not stop the winner.
+
+```text
+browser worker
+├── target lease → navigator a
+└── target lease → navigator b
+```
+
+Named-profile concurrency: two `bind_profile(profile=…)` calls share `BROWSER_CDP_URL` and get distinct `BROWSERCTL_TARGET_ID`s. `release=true` drops that navigator's target only.
 
 Timer units: `packaging/systemd/user/` + `./bin/browserctl-reap-timer install`.
 

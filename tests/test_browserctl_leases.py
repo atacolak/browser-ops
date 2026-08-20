@@ -108,21 +108,30 @@ def test_acquire_returns_env_and_lease(mgr):
     assert loaded["worker_id"] == "scratch-test-1"
 
 
-def test_duplicate_lease_same_worker_conflicts(mgr):
+def test_duplicate_exclusive_browser_conflicts(mgr):
     m, fake, state = mgr
-    first = m.acquire({"kind": "scratch", "owner": "a", "ttl": 120})
+    first = m.acquire({"kind": "scratch", "owner": "a", "ttl": 120, "worker_id": "scratch-test-1"})
     with pytest.raises(LeaseConflict) as ei:
-        m.acquire({"kind": "scratch", "owner": "b", "ttl": 120})
+        m.acquire({"kind": "scratch", "owner": "b", "ttl": 120, "browser_exclusive": True, "worker_id": "scratch-test-1"})
     err = ei.value
     assert err.code == "LEASE_CONFLICT"
     assert err.details["worker_id"] == "scratch-test-1"
-    # second acquire's adapter start was rolled back via force release
-    assert len(fake.starts) == 2
-    assert len(fake.stops) >= 1
-    # first still active
+    assert len(fake.starts) == 1
     active = find_active_lease_for_worker(state, "scratch-test-1")
     assert active is not None
-    assert active["lease_id"] == first["lease"]["lease_id"]
+    assert active["lease_id"] == first["browser_lease"]["lease_id"]
+
+
+def test_second_acquire_joins_new_target(mgr):
+    m, fake, state = mgr
+    first = m.acquire({"kind": "scratch", "owner": "a", "ttl": 120, "worker_id": "scratch-test-1"})
+    second = m.acquire({"kind": "scratch", "owner": "b", "ttl": 120, "worker_id": "scratch-test-1"})
+    assert first["lease"]["worker_id"] == second["lease"]["worker_id"]
+    assert first["env"]["BROWSER_CDP_URL"] == second["env"]["BROWSER_CDP_URL"]
+    assert first["lease"]["target_id"] != second["lease"]["target_id"]
+    assert first["lease"]["lease_id"] != second["lease"]["lease_id"]
+    assert first["browser_lease"]["lease_id"] == second["browser_lease"]["lease_id"]
+    assert len(fake.starts) == 1
 
 
 def test_release_idempotent(mgr):
@@ -163,18 +172,19 @@ def test_reap_expired_one_shot(mgr):
     assert result2["count"] == 0
 
 
-def test_reap_skips_expired_persistent_without_opt_in(mgr):
-    """Default persistent leases age past TTL but stay operator-owned."""
+def test_reap_skips_expired_persistent_browser_without_opt_in(mgr):
+    """Default persistent *browser* leases age past TTL but stay operator-owned."""
     from browserctl.store import is_auto_reap_eligible
 
     m, fake, state = mgr
     out = m.acquire(
         {"kind": "scratch", "owner": "a", "mode": "persistent", "ttl": 1}
     )
-    lid = out["lease"]["lease_id"]
-    lease = load_lease(state, lid)
+    bid = out["browser_lease"]["lease_id"]
+    lease = load_lease(state, bid)
     assert lease is not None
     assert lease["mode"] == "persistent"
+    assert lease["scope"] == "browser"
     assert not is_auto_reap_eligible(lease)
     lease["expires_at"] = time.time() - 10
     save_lease(state, lease)
@@ -183,11 +193,11 @@ def test_reap_skips_expired_persistent_without_opt_in(mgr):
     assert result["count"] == 0
     assert result["reaped"] == []
     assert any(
-        s.get("lease_id") == lid and s.get("reason") == "not_auto_reap_eligible"
+        s.get("lease_id") == bid and s.get("reason") == "not_auto_reap_eligible"
         for s in result["skipped"]
     )
     assert len(fake.stops) == 0
-    still = load_lease(state, lid)
+    still = load_lease(state, bid)
     assert still is not None
     assert still["status"] == "active"
 
@@ -292,13 +302,13 @@ def test_mark_expiring_shortens_ttl(mgr):
 def test_list_hides_terminal(mgr):
     m, _fake, _state = mgr
     out = m.acquire({"kind": "scratch", "owner": "a", "ttl": 60})
-    assert len(m.list_leases()) == 1
+    assert len(m.list_leases()) == 2
     m.release(lease_id=out["lease"]["lease_id"])
     assert len(m.list_leases()) == 0
-    assert len(m.list_leases(include_terminal=True)) == 1
+    assert len(m.list_leases(include_terminal=True)) == 2
 
 
-def test_concurrent_acquire_one_winner(tmp_path: Path):
+def test_concurrent_acquire_all_join(tmp_path: Path):
     state = tmp_path / "state"
     state.mkdir()
     m = Manager(root=ROOT, state_root=state)
@@ -318,8 +328,6 @@ def test_concurrent_acquire_one_winner(tmp_path: Path):
                     }
                 )
                 results.append(out)
-        except LeaseConflict as e:
-            errors.append(e)
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
@@ -329,12 +337,16 @@ def test_concurrent_acquire_one_winner(tmp_path: Path):
     for t in threads:
         t.join()
 
-    assert len(results) == 1
-    assert len(errors) == 7
-    assert all(isinstance(e, LeaseConflict) for e in errors)
+    assert errors == []
+    assert len(results) == 8
+    assert len(fake.starts) == 1
+    ids = {r["lease"]["target_id"] for r in results}
+    assert len(ids) == 8
+    browsers = {r["browser_lease"]["lease_id"] for r in results}
+    assert len(browsers) == 1
     active = find_active_lease_for_worker(state, "scratch-race")
     assert active is not None
-    assert active["lease_id"] == results[0]["lease"]["lease_id"]
+    assert active["scope"] == "browser"
 
 
 def test_no_managed_default(tmp_path: Path):

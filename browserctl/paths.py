@@ -13,6 +13,7 @@ CONTROL_ROOT_NAME = "control"
 LEASES_DIR_NAME = "leases"
 INDEX_NAME = "index.json"
 WORKER_LOCK_NAME = "worker.lock"
+TARGET_REGISTRY_NAME = "targets.json"
 
 
 def resolve_root(root: Path | str | None = None) -> Path:
@@ -64,6 +65,10 @@ def worker_control_dir(state_root: Path | str, worker_id: str) -> Path:
 
 def active_target_path(state_root: Path | str, worker_id: str) -> Path:
     return worker_control_dir(state_root, worker_id) / "active-target.json"
+
+
+def target_registry_path(state_root: Path | str, worker_id: str) -> Path:
+    return worker_control_dir(state_root, worker_id) / TARGET_REGISTRY_NAME
 
 
 def scratch_profiles_root(root: Path | str | None = None) -> Path:

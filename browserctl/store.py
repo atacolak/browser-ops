@@ -8,7 +8,7 @@ Layout::
       index.lock                 # global index RMW mutex
       ports.lock                 # scratch CDP port allocation
       leases/<lease_id>.json     # full lease record
-      workers/<worker_id>/worker.lock  # one mutation lease per worker
+      workers/<worker_id>/worker.lock  # browser/process mutations
 
 Locking: directory ``mkdir`` as exclusive lock for mutations on a worker / index.
 """
@@ -41,6 +41,10 @@ __all__ = [
     "delete_lease_record",
     "list_lease_ids",
     "find_active_lease_for_worker",
+    "find_browser_lease_for_worker",
+    "iter_active_target_leases",
+    "find_target_lease",
+    "lease_scope",
     "iter_leases",
     "is_expired",
     "is_auto_reap_eligible",
@@ -120,6 +124,39 @@ def list_lease_ids(state_root: Path | str) -> list[str]:
     ids = [p.stem for p in d.glob("*.json")]
     return sorted(ids)
 
+def lease_scope(lease: dict[str, Any]) -> str:
+    raw = str(lease.get("scope") or "").strip().lower()
+    if raw in ("browser", "target"):
+        return raw
+    # pre-0.2 records are process+mutation combined
+    return "browser"
+
+
+def _active_status(lease: dict[str, Any]) -> bool:
+    status = lease.get("status")
+    if status in ("released", "reaped", "failed"):
+        return False
+    return status in ("active", "expiring", "acquired")
+
+
+def find_browser_lease_for_worker(
+    state_root: Path | str,
+    worker_id: str,
+    *,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Return the non-terminal browser/process lease for *worker_id*, if any."""
+    _ = now
+    for lid in list_lease_ids(state_root):
+        lease = load_lease(state_root, lid)
+        if not lease or lease.get("worker_id") != worker_id:
+            continue
+        if not _active_status(lease):
+            continue
+        if lease_scope(lease) == "browser":
+            return lease
+    return None
+
 
 def find_active_lease_for_worker(
     state_root: Path | str,
@@ -127,22 +164,35 @@ def find_active_lease_for_worker(
     *,
     now: float | None = None,
 ) -> dict[str, Any] | None:
-    """Return non-terminal lease holding mutation on worker, if any."""
-    _ = now  # reserved for future soft-expiry filtering
+    """Return the browser/process lease holding lifecycle authority."""
+    return find_browser_lease_for_worker(state_root, worker_id, now=now)
+
+
+def iter_active_target_leases(
+    state_root: Path | str,
+    worker_id: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for lid in list_lease_ids(state_root):
         lease = load_lease(state_root, lid)
-        if not lease:
+        if not lease or lease.get("worker_id") != worker_id:
             continue
-        if lease.get("worker_id") != worker_id:
+        if not _active_status(lease):
             continue
-        status = lease.get("status")
-        if status in ("released", "reaped", "failed"):
-            continue
-        # expired still "active" until reap — blocks new acquire
-        if status in ("active", "expiring", "acquired"):
+        if lease_scope(lease) == "target":
+            out.append(lease)
+    return out
+
+
+def find_target_lease(
+    state_root: Path | str,
+    worker_id: str,
+    target_id: str,
+) -> dict[str, Any] | None:
+    for lease in iter_active_target_leases(state_root, worker_id):
+        if str(lease.get("target_id") or "") == target_id:
             return lease
     return None
-
 
 def iter_leases(state_root: Path | str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
@@ -221,13 +271,17 @@ def base_lease(
     env: dict[str, str] | None = None,
     meta: dict[str, Any] | None = None,
     now: float | None = None,
+    scope: str = "browser",
+    target_id: str | None = None,
+    browser_lease_id: str | None = None,
 ) -> dict[str, Any]:
     now = now if now is not None else _now()
     lid = lease_id or new_lease_id()
     exp = now + float(ttl_seconds)
-    return {
+    doc: dict[str, Any] = {
         "version": LEASE_SCHEMA_VERSION,
         "lease_id": lid,
+        "scope": scope,
         "worker_id": worker_id,
         "kind": kind,
         "adapter": adapter,
@@ -246,7 +300,11 @@ def base_lease(
         "watch": None,
         "meta": meta or {},
     }
-
+    if target_id:
+        doc["target_id"] = target_id
+    if browser_lease_id:
+        doc["browser_lease_id"] = browser_lease_id
+    return doc
 
 def require_lease(state_root: Path | str, lease_id: str) -> dict[str, Any]:
     lease = load_lease(state_root, lease_id)

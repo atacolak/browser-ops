@@ -95,10 +95,11 @@ def test_cli_duplicate_lease_json_error(tmp_path, capsys):
         assert main(args_base) == 0
         capsys.readouterr()  # drop first success payload
         code = main(args_base)
-    assert code == 3
-    err = json.loads(capsys.readouterr().out)
-    assert err["ok"] is False
-    assert err["error"]["code"] == "LEASE_CONFLICT"
+    assert code == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["ok"] is True
+    assert second["lease"]["scope"] == "target"
+    assert second["lease"]["worker_id"] == "scratch-cli-dup"
 
 
 def test_cli_list_and_reap(tmp_path, capsys):
@@ -127,11 +128,12 @@ def test_cli_list_and_reap(tmp_path, capsys):
         # force expire via manager
         m = Manager(root=ROOT, state_root=state)
         leases = m.list_leases()
-        assert len(leases) == 1
+        assert len(leases) == 2
         from browserctl.store import load_lease, save_lease
         import time
 
-        lease = load_lease(state, leases[0]["lease_id"])
+        target = next(L for L in leases if L.get("scope") == "target")
+        lease = load_lease(state, target["lease_id"])
         lease["expires_at"] = time.time() - 5
         save_lease(state, lease)
 

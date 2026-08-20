@@ -1,6 +1,6 @@
 # browser-ops
 
-Local Cloak lease plane: one mutation lease per worker, named profiles, scratch or vpn.
+Local Cloak lease plane: one browser/process per worker, many target leases, named profiles, scratch or vpn.
 
 **Agents:** [`AGENTS.md`](./AGENTS.md) · **CLI:** [`docs/browserctl.md`](./docs/browserctl.md) · **Binding:** [`profiles/BINDING.md`](./profiles/BINDING.md)
 
@@ -64,7 +64,7 @@ python3 -m pytest tests/ -q
 
 ## Hard rules
 
-- One mutation lease per worker; no leased `default`
+- One browser/process lease per worker; many target leases; one mutating owner per target; no leased `default`
 - Named profiles: register / associate / resolve / `launch --profile`
 - Associate only after proven login; resolve never starts browsers or invents scratch
 - No secrets in git, leases, or `PROFILES.json`

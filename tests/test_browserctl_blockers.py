@@ -64,7 +64,7 @@ class AttachedFakeAdapter:
         return {"cdp_alive": True, "daemon": "running"}
 
 
-def test_attached_duplicate_conflict_never_stops_winner(tmp_path: Path):
+def test_attached_join_never_stops_winner(tmp_path: Path):
     state = tmp_path / "state"
     state.mkdir()
     m = Manager(root=ROOT, state_root=state)
@@ -73,13 +73,24 @@ def test_attached_duplicate_conflict_never_stops_winner(tmp_path: Path):
         first = m.acquire(
             {"kind": "vpn", "country": "SE", "owner": "a", "ttl": 120}
         )
-        assert first["ok"] is True
+        second = m.acquire({"kind": "vpn", "country": "SE", "owner": "b", "ttl": 120})
+        assert first["ok"] is True and second["ok"] is True
+        assert first["lease"]["target_id"] != second["lease"]["target_id"]
+        assert first["browser_lease"]["lease_id"] == second["browser_lease"]["lease_id"]
         with pytest.raises(LeaseConflict):
-            m.acquire({"kind": "vpn", "country": "SE", "owner": "b", "ttl": 120})
+            m.acquire(
+                {
+                    "kind": "vpn",
+                    "country": "SE",
+                    "owner": "c",
+                    "ttl": 120,
+                    "browser_exclusive": True,
+                }
+            )
     assert fake.stops == []
     active = find_active_lease_for_worker(state, "vpn-test-worker")
     assert active is not None
-    assert active["lease_id"] == first["lease"]["lease_id"]
+    assert active["lease_id"] == first["browser_lease"]["lease_id"]
     assert active["meta"].get("attached_existing") is True
 
 

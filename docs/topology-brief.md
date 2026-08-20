@@ -40,7 +40,7 @@ cloak is the browser substrate. daemon is the harness + target publisher. browse
 | orchestrator / human | `launch`/`release`, profile resolve, associate-after-login | driving pages; raw port grabs |
 | navigator | page ops with ALREADY-ACQUIRED `cdp_url` | allocating cdp/ports/profiles; lease lifecycle; shelling browserctl |
 | demiurge | code/config in browser-ops | browser mutation |
-| browserctl | one mutation lease per worker; adapter start/stop | secrets in lease/profile json |
+| browserctl | one browser/process lease per worker; target leases; adapter start/stop | secrets in lease/profile json |
 
 ## happy path
 
@@ -89,10 +89,18 @@ current tracked names:
 
 ## lease laws
 
-- one mutation lease per worker; duplicate → LEASE_CONFLICT
+- one browser/process lease per worker; many target leases may share it
+- one mutating owner per target; owned claim → TARGET_CONFLICT
+- exclusive second browser lease → LEASE_CONFLICT
 - no managed `default` for leased work
-- scheduled reap is the crash backstop for `one_shot` / `expiring` / `auto_reap`
+- scheduled reap is the crash backstop for `one_shot` / `expiring` / `auto_reap` (and stale targets)
 - control plane atomic files under state/control/
+
+```text
+browser worker
+├── target lease → navigator a
+└── target lease → navigator b
+```
 
 ## commands cheat sheet
 

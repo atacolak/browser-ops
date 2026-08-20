@@ -37,8 +37,27 @@ class LeaseConflict(BrowserctlError):
     def __init__(self, worker_id: str, holder: dict[str, Any] | None = None):
         super().__init__(
             "LEASE_CONFLICT",
-            f"worker {worker_id!r} already has an active mutation lease",
+            f"worker {worker_id!r} already has an active browser/process lease",
             details={"worker_id": worker_id, "holder": holder or {}},
+            exit_code=3,
+        )
+
+
+class TargetConflict(BrowserctlError):
+    def __init__(
+        self,
+        worker_id: str,
+        target_id: str,
+        holder: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            "TARGET_CONFLICT",
+            f"target {target_id!r} on worker {worker_id!r} already has a mutating owner",
+            details={
+                "worker_id": worker_id,
+                "target_id": target_id,
+                "holder": holder or {},
+            },
             exit_code=3,
         )
 
