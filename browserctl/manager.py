@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from browserctl.adapters import get_adapter
-from browserctl.allocate import target_from_request_or_create
+from browserctl.allocate import claim_unowned_or_create
 from browserctl.errors import InvalidRequest, LeaseConflict, LeaseNotFound, TargetConflict
 from browserctl.paths import (
     active_target_path,
@@ -36,6 +36,7 @@ from browserctl.store import (
     worker_mutex,
 )
 from browserctl.target_registry import (
+    active_owned_targets,
     load_registry,
     release_target as registry_release_target,
     upsert_target,
@@ -210,7 +211,8 @@ class Manager:
                     worker_id, requested, holder=_public_lease(held)
                 )
             return requested
-        return target_from_request_or_create(req, cdp_url=cdp_url)
+        owned = set(active_owned_targets(load_registry(self.state_root, worker_id)))
+        return claim_unowned_or_create(cdp_url, owned_ids=owned)
 
     def _mint_target_lease(
         self,

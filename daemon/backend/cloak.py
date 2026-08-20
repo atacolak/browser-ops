@@ -125,6 +125,33 @@ class CloakBackend(BrowserBackend):
             return Path(raw).expanduser().resolve()
         return None
 
+    def _wipe_session_restore(self) -> None:
+        """Drop Chromium Session/Current Tabs so a kill cannot restore a tab storm."""
+        root = Path(self.profile_dir)
+        for rel in ("Default/Sessions", "Default/Session Storage"):
+            d = root / rel
+            if not d.is_dir():
+                continue
+            for child in d.iterdir():
+                try:
+                    if child.is_file() or child.is_symlink():
+                        child.unlink()
+                except OSError as exc:
+                    print(
+                        f"[{self.worker_id}] session restore wipe skipped {child}: {exc}",
+                        file=sys.stderr,
+                    )
+        for name in ("Default/Current Session", "Default/Current Tabs", "Default/Last Session", "Default/Last Tabs"):
+            p = root / name
+            try:
+                if p.is_file() or p.is_symlink():
+                    p.unlink()
+            except OSError as exc:
+                print(
+                    f"[{self.worker_id}] session restore wipe skipped {p}: {exc}",
+                    file=sys.stderr,
+                )
+
     @property
     def active_target_path(self) -> Path:
         if self._active_target_path_override is not None:
@@ -338,9 +365,14 @@ class CloakBackend(BrowserBackend):
             proxy = ProxySettings(server=proxy_url)
 
         # Build extra Chromium CLI args
-        args = ["--fingerprint-webrtc-ip=auto"]
+        args = [
+            "--fingerprint-webrtc-ip=auto",
+            "--disable-session-crashed-bubble",
+            "--hide-crash-restore-bubble",
+        ]
         if self.cdp_port:
             args.append(f"--remote-debugging-port={self.cdp_port}")
+        self._wipe_session_restore()
 
         print(
             f"[{self.worker_id}] launching browser via cloakbrowser wrapper …",
