@@ -27,8 +27,8 @@ human / orchestrator / bind_profile
        ├─ state/control/      → leases, ports, locks (no secrets)
        └─ returns env JSON
             └─ navigator (ONLY browser actor)
-                 ├─ browser open app.cdp_url
-                 └─ daemon publishes active-target.json
+                 ├─ browser open app.cdp_url + app.target_id
+                 └─ daemon publishes active-target.json (foreground only)
 ```
 
 cloak is the browser substrate. daemon is the harness + target publisher. browserctl is the mutex/lease desk. navigator is the hands.
@@ -46,14 +46,16 @@ cloak is the browser substrate. daemon is the harness + target publisher. browse
 
 1. decide selector: `--profile NAME` OR `--kind scratch|vpn …`
 2. `out=$(./bin/browserctl launch … --owner <orch> --json)`
-3. attach `env.BROWSER_CDP_URL`
+3. attach `env.BROWSER_CDP_URL` **and** `env.BROWSERCTL_TARGET_ID`
 4. `./bin/browserctl release --lease "$lease" --json`
 
-OMP: `bind_profile` does steps 1–2; `browser` open uses `app.cdp_url`; `release=true` or session shutdown does step 4.
+OMP: `bind_profile` does steps 1–2; `browser` open uses `app.cdp_url` + `app.target_id` (sidecar / `BROWSERCTL_TARGET_ID` if omitted); `release=true` drops that target only.
 
 ## env contract
 
-- `BROWSERCTL_LEASE_ID`
+- `BROWSERCTL_LEASE_ID` (target lease; release this)
+- `BROWSERCTL_TARGET_ID` (owned CDP page)
+- `BROWSERCTL_BROWSER_LEASE_ID`
 - `BROWSER_HARNESS_WORKER`
 - `BROWSER_CDP_URL`
 - `BROWSER_TARGET_STATE`
@@ -79,6 +81,7 @@ no env, no browser authority.
 current tracked names:
 - `github-ata` → scratch label github-ata; assoc github.com / atacolak
 - `scratch-general-1..3` → finite stable scratch pool (no associations)
+- `shared-headed-demo` → stable scratch, `headed: true` (shared CDP, per-navigator targets)
 
 ## scratch: ephemeral vs stable
 

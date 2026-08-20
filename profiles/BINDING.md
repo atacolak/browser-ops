@@ -4,7 +4,7 @@
 
 ```text
 1 named face  ↔  1 Cloak profile dir  ↔  1 daemon --worker id  ↔  1 CDP port
-1 worker  ↔  at most 1 active mutation lease (browserctl)
+1 worker  ↔  1 browser/process lease  ↔  many target leases (one mutating owner each)
 ```
 
 Cookies **are** the person. Do not share browsers across accounts.

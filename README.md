@@ -26,7 +26,7 @@ Local Cloak lease plane: one browser/process per worker, many target leases, nam
 # host admin (opt-in crash backstop): ./bin/browserctl-reap-timer install --enable --now
 ```
 
-OMP navigators bind with `bind_profile`, then `browser` open `app.cdp_url`. They do not shell `browserctl`.
+OMP navigators bind with `bind_profile`, then `browser` open `app.cdp_url` **and** `app.target_id` (the leased target). They do not shell `browserctl` and must not adopt the first or visible tab.
 
 ---
 
@@ -48,7 +48,7 @@ OMP navigators bind with `bind_profile`, then `browser` open `app.cdp_url`. They
 
 ## Env contract
 
-`BROWSERCTL_LEASE_ID` · `BROWSER_HARNESS_WORKER` · `BROWSER_CDP_URL` · `BROWSER_TARGET_STATE` · `BROWSER_OPS_ROOT` · `BROWSER_ALLOW_EVALUATE`
+`BROWSERCTL_LEASE_ID` · `BROWSERCTL_TARGET_ID` · `BROWSERCTL_BROWSER_LEASE_ID` · `BROWSER_HARNESS_WORKER` · `BROWSER_CDP_URL` · `BROWSER_TARGET_STATE` · `BROWSER_OPS_ROOT` · `BROWSER_ALLOW_EVALUATE`
 
 Root discovery: `--root` → `BROWSER_OPS_ROOT` → this checkout. Ad-hoc debug: `./bin/start-daemon …` — not for leases.
 

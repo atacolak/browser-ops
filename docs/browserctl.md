@@ -7,7 +7,7 @@ Lease a Cloak browser. Named profiles live in `profiles/PROFILES.json`.
 ./bin/browserctl release --lease "$LEASE" --json
 ```
 
-OMP navigators use `bind_profile` (source: `omp/bind-profile.ts`) and attach with `app.cdp_url`. They do not shell this CLI.
+OMP navigators use `bind_profile` (source: `omp/bind-profile.ts`) and attach with `app.cdp_url` plus `app.target_id`. They do not shell this CLI.
 
 ---
 
