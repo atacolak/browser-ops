@@ -112,6 +112,29 @@ function clearSidecar(ctx: SessionCtx): void {
 	}
 }
 
+async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {
+	const raw = (cdp || "").trim();
+	if (!raw) return false;
+	let origin: string;
+	try {
+		const u = new URL(raw);
+		if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+		origin = u.origin;
+	} catch {
+		return false;
+	}
+	const r = await exec("python3", ["-c", (
+		"import sys,urllib.request\n"
+		+ "u=sys.argv[1].rstrip('/')+'/json/version'\n"
+		+ "try:\n"
+		+ " urllib.request.urlopen(u, timeout=1)\n"
+		+ " sys.exit(0)\n"
+		+ "except Exception:\n"
+		+ " sys.exit(1)\n"
+	), origin], { timeout: 3_000 });
+	return r.code === 0;
+}
+
 async function runJson(
 	exec: ExecFn,
 	argv: string[],
@@ -220,23 +243,27 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 			const key = sessionKey(ctx);
 			const existing = loadState(ctx);
 			if (existing) {
-				binds.set(key, existing);
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text:
-								`Already bound lease=${existing.leaseId} profile=${existing.profile || "(scratch)"} ` +
-								`cdp_url=${existing.cdp}` +
-								(existing.targetId ? ` target=${existing.targetId}` : "") +
-								`. Open with app.cdp_url=${existing.cdp}` +
-								(existing.targetId ? ` app.target_id=${existing.targetId}` : "") +
-								`. Attach only to the leased target. release=true drops this target, not sibling navigators.`,
-						},
-					],
-				};
+				if (!(await cdpHttpAlive(pi.exec, existing.cdp))) {
+					binds.delete(key);
+					clearSidecar(ctx);
+				} else {
+					binds.set(key, existing);
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text:
+									`Already bound lease=${existing.leaseId} profile=${existing.profile || "(scratch)"} ` +
+									`cdp_url=${existing.cdp}` +
+									(existing.targetId ? ` target=${existing.targetId}` : "") +
+									`. Open with app.cdp_url=${existing.cdp}` +
+									(existing.targetId ? ` app.target_id=${existing.targetId}` : "") +
+									`. Attach only to the leased target. release=true drops this target, not sibling navigators.`,
+							},
+						],
+					};
+				}
 			}
-
 			const argv: string[] = ["launch", "--owner", "omp-nav"];
 			let used = "scratch";
 
