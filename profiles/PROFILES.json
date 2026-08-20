@@ -55,6 +55,17 @@
         "label": "shared-headed-demo"
       },
       "updated_at": "2026-08-20T00:00:00Z"
+    },
+    "ubereats-and-eatclub-logged": {
+      "associations": [],
+      "created_at": "2026-08-20T07:58:21Z",
+      "description": "Headed scratch for operator UberEats + EatClub logins. Persistent shared CDP, per-navigator tabs. Not billing.",
+      "launch": {
+        "headed": true,
+        "kind": "scratch",
+        "label": "ubereats-and-eatclub-logged"
+      },
+      "updated_at": "2026-08-20T07:58:21Z"
     }
   },
   "version": 2
