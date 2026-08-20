@@ -1,0 +1,54 @@
+"""CDP target allocation uses PUT /json/new, not first-tab discovery."""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from browserctl.allocate import create_page_target  # noqa: E402
+
+
+def test_create_page_target_uses_put():
+    methods: list[str] = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_PUT(self):  # noqa: N802
+            methods.append("PUT")
+            if urlparse(self.path).path == "/json/new":
+                body = json.dumps({"id": "REAL-TARGET-1", "type": "page"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_error(404)
+
+        def do_GET(self):  # noqa: N802
+            methods.append("GET")
+            self.send_error(405)
+
+        def log_message(self, *args):
+            return
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        tid = create_page_target(f"http://127.0.0.1:{httpd.server_address[1]}")
+        assert tid == "REAL-TARGET-1"
+        assert methods[0] == "PUT"
+        assert "GET" not in methods
+    finally:
+        httpd.shutdown()
+
+
+def test_create_page_target_synthetic_when_down():
+    tid = create_page_target("http://127.0.0.1:1")
+    assert tid.startswith("tgt-")

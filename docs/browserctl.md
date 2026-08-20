@@ -131,7 +131,7 @@ browser worker
 └── target lease → navigator b
 ```
 
-Named-profile concurrency: two `bind_profile(profile=…)` calls share `BROWSER_CDP_URL` and get distinct `BROWSERCTL_TARGET_ID`s. `release=true` drops that navigator's target only.
+Named-profile concurrency: two `bind_profile(profile=…)` calls share `BROWSER_CDP_URL` and get distinct `BROWSERCTL_TARGET_ID`s. OMP `browser open` must attach with `app.target_id` (or the bind sidecar / `BROWSERCTL_TARGET_ID`); it must not take the first or visible tab. `release=true` drops that navigator's target only.
 
 Timer units: `packaging/systemd/user/` + `./bin/browserctl-reap-timer install`.
 

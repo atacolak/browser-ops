@@ -32,7 +32,7 @@ Human entry: [`README.md`](./README.md) · CLI: [`docs/browserctl.md`](./docs/br
 | orchestrator / human | `launch` / `release` / profile register+associate | driving pages; raw daemon ports |
 | demiurge | code/config in this repo | browser mutation |
 
-**Rule:** only navigator has browser tools. Bind once with `bind_profile`, then `browser` open `app.cdp_url`.
+**Rule:** only navigator has browser tools. Bind once with `bind_profile`, then `browser` open `app.cdp_url` **and** `app.target_id` (the leased target). Never adopt the first/visible tab on a shared browser.
 
 ---
 

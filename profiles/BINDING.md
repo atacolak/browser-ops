@@ -33,10 +33,10 @@ Cookies **are** the person. Do not share browsers across accounts.
 ```
 
 - Returns `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, `BROWSER_CDP_URL`, …).
-- Enforces **one mutation lease per worker**; refuses managed **`default`**.
+- Enforces **one browser/process lease per worker** and **one mutating owner per target**; refuses managed **`default`**.
 - `--profile` is exclusive with launch selector flags; associations are explicit (never URL-inferred).
 - New named faces require a **description**. `launch.egress` is `direct` or `{type:vpn,…}` — never a peer kind.
-- OMP navigators bind via `bind_profile` (`omp/bind-profile.ts` → `app.cdp_url`). They do not shell `browserctl`.
+- OMP navigators bind via `bind_profile` (`omp/bind-profile.ts` → `app.cdp_url` + `app.target_id`). They do not shell `browserctl`.
 
 Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md).
 

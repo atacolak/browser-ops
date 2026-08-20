@@ -44,6 +44,17 @@
         "label": "scratch-general-3"
       },
       "updated_at": "2026-08-14T00:00:00Z"
+    },
+    "shared-headed-demo": {
+      "associations": [],
+      "created_at": "2026-08-20T00:00:00Z",
+      "description": "Headed scratch for concurrent navigator target-lease demo. No logins.",
+      "launch": {
+        "headed": true,
+        "kind": "scratch",
+        "label": "shared-headed-demo"
+      },
+      "updated_at": "2026-08-20T00:00:00Z"
     }
   },
   "version": 2

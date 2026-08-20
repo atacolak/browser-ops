@@ -229,8 +229,9 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 								`Already bound lease=${existing.leaseId} profile=${existing.profile || "(scratch)"} ` +
 								`cdp_url=${existing.cdp}` +
 								(existing.targetId ? ` target=${existing.targetId}` : "") +
-								`. Open with app.cdp_url=${existing.cdp} (no app.path, no app.relay). ` +
-								`This session owns only its target. release=true drops this target, not sibling navigators.`,
+								`. Open with app.cdp_url=${existing.cdp}` +
+								(existing.targetId ? ` app.target_id=${existing.targetId}` : "") +
+								`. Attach only to the leased target. release=true drops this target, not sibling navigators.`,
 						},
 					],
 				};
@@ -338,9 +339,10 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 							(state.targetId ? ` target=${state.targetId}` : "") +
 							(state.browserLeaseId ? ` browser_lease=${state.browserLeaseId}` : "") +
 							` cdp_url=${cdp}. ` +
-							`Next: browser open with app.cdp_url=${cdp} (no app.path, no app.relay). ` +
-							`Same profile may host other navigators on other targets. ` +
-							`release=true drops this target only.`,
+							`Next: browser open with app.cdp_url=${cdp}` +
+							(state.targetId ? ` app.target_id=${state.targetId}` : "") +
+							` (no app.path, no app.relay). Attach only to the leased target; never the first/visible tab. ` +
+							`Same profile may host other navigators on other targets. release=true drops this target only.`,
 					},
 				],
 			};
