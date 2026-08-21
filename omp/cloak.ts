@@ -426,7 +426,7 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 			const visible = redactForModel(result) as DaemonResponse;
 			if (isDaemonError(result)) {
 				if (result.code === "TARGET_LEASE_REQUIRED") {
-					binder.dropState(ctx);
+					await binder.discardState(ctx);
 				}
 				const msg = visible.message || visible.error || JSON.stringify(visible);
 				const code = result.code ? `[${result.code}] ` : "";

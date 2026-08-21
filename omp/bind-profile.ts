@@ -271,6 +271,38 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 		clearSidecar(ctx);
 	}
 
+	function heldLeaseIds(state: BindState): string[] {
+		return [...new Set([state.leaseId, ...Object.values(state.held || {})].filter(Boolean))];
+	}
+
+	async function releaseHeld(state: BindState): Promise<string[]> {
+		const failed: string[] = [];
+		for (const lid of heldLeaseIds(state)) {
+			const released = await runJson(exec, ["release", "--lease", lid], state.root);
+			if (!released.ok) failed.push(lid);
+		}
+		return failed;
+	}
+
+	async function discardState(ctx: SessionCtx): Promise<ReleaseResult> {
+		const state = loadState(ctx);
+		if (!state) {
+			return { ok: true, text: "No bind to release." };
+		}
+		const ids = heldLeaseIds(state);
+		const failed = await releaseHeld(state);
+		dropState(ctx);
+		if (failed.length) {
+			return { ok: false, text: `release failed for ${failed.length} tab lease(s).` };
+		}
+		return {
+			ok: true,
+			text: `Released ${ids.length} tab(s)` +
+				(state.targetId ? ` last=${state.targetId}` : "") +
+				". shared browser stays up if other tab leases remain.",
+		};
+	}
+
 	async function isAlive(state: BindState): Promise<boolean> {
 		if (!sidecarComplete(state)) return false;
 		if (opts?.isAlive) {
@@ -282,29 +314,7 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 	}
 
 	async function releaseState(ctx: SessionCtx): Promise<ReleaseResult> {
-		const state = loadState(ctx);
-		if (!state) {
-			return { ok: true, text: "No bind to release." };
-		}
-		const ids = new Set<string>([state.leaseId, ...Object.values(state.held || {})].filter(Boolean));
-		const failed: string[] = [];
-		for (const lid of ids) {
-			const released = await runJson(exec, ["release", "--lease", lid], state.root);
-			if (!released.ok) failed.push(lid);
-		}
-		dropState(ctx);
-		if (failed.length) {
-			return {
-				ok: false,
-				text: `release failed for ${failed.length} tab lease(s).`,
-			};
-		}
-		return {
-			ok: true,
-			text: `Released ${ids.size} tab(s)` +
-				(state.targetId ? ` last=${state.targetId}` : "") +
-				". shared browser stays up if other tab leases remain.",
-		};
+		return discardState(ctx);
 	}
 
 	async function bind(ctx: SessionCtx, params: BindParams): Promise<BindResult> {
@@ -321,7 +331,7 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 				storeState(ctx, existing);
 				return { ok: true, reused: true, state: existing, used: existing.profile || "(scratch)" };
 			}
-			dropState(ctx);
+			await discardState(ctx);
 		}
 
 		const argv: string[] = ["launch", "--owner", "omp-nav"];
@@ -385,5 +395,5 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 		return { ok: true, reused: false, state: built, used };
 	}
 
-	return { loadState, storeState, dropState, releaseState, bind };
+	return { loadState, storeState, dropState, discardState, releaseState, bind };
 }
