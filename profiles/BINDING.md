@@ -4,7 +4,7 @@
 
 ```text
 1 named face  ↔  1 Cloak profile dir  ↔  1 daemon --worker id  ↔  1 CDP port
-1 worker  ↔  1 browser/process lease  ↔  many target leases (one mutating owner each)
+1 worker  ↔  1 process lease  ↔  many tab leases (one writer each)
 ```
 
 Cookies **are** the person. Do not share browsers across accounts.
@@ -33,12 +33,12 @@ Cookies **are** the person. Do not share browsers across accounts.
 ```
 
 - Returns `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, `BROWSER_CDP_URL`, …). `BROWSER_CDP_URL` is for humans/doctor.
-- Enforces **one browser/process lease per worker** and **one mutating owner per target**; refuses managed **`default`**.
+- Enforces **one process lease per worker** and **one writer per tab**; refuses managed **`default`**.
 - `--profile` is exclusive with launch selector flags; associations are explicit (never URL-inferred).
 - New named faces require a **description**. `launch.egress` is `direct` or `{type:vpn,…}` — never a peer kind.
-- OMP navigators bind via `cloak action=bind` (`omp/cloak.ts`) and drive json-line rpc on the worker daemon socket. They do not shell `browserctl` and do not attach `app.cdp_url`.
+- Agents bind via `cloak action=bind` (`omp/cloak.ts`) and drive json-line rpc on the worker daemon socket. They do not shell `browserctl` and do not attach a second CDP client.
 
-Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md). Drive path: [`docs/CONTRACT.md`](../docs/CONTRACT.md).
+Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Agent law: [`AGENTS.md`](../AGENTS.md). Drive path: [`docs/CONTRACT.md`](../docs/CONTRACT.md).
 
 ---
 

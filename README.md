@@ -1,100 +1,127 @@
 # browser-ops
 
-Inspired by [browser-use/browser-harness](https://github.com/browser-use/browser-harness) — a thin browser-driving loop, with optional markdown skills as operator notes. This repo does **not** vendor that runtime, Python helpers, or skill files. Leases, Cloak, and the daemon rpc here are original.
+*Inspired by [browser-use/browser-harness](https://github.com/browser-use/browser-harness).*
 
-A local **lease plane + drive daemon** for Cloak: one browser process per worker, many target leases, one mutating owner per target. Named faces and anonymous scratch live in a local registry; omp navigators drive a leased tab only through the daemon unix socket.
+Lease a [Cloak](https://github.com/CloakLabs/cloakbrowser) browser, then drive a specific tab over a unix socket. One Chrome process per named face. Many tabs can share that process. Each tab has at most one writer.
 
-**CLI:** [`docs/browserctl.md`](./docs/browserctl.md) · **Binding:** [`profiles/BINDING.md`](./profiles/BINDING.md) · **Topology:** [`docs/topology-brief.md`](./docs/topology-brief.md)
+You do not attach Puppeteer or a raw CDP URL to a shared port. The daemon already holds that connection. You send one JSON line per action.
 
----
+## What it can do
 
-## Lease laws
+- **Scratch browsers** — throwaway or stable anonymous profiles, CDP ports 9300–9399
+- **Named faces** — register a profile, associate it with a site after login, resolve it later without guessing
+- **VPN faces** — attach or start a region worker (`--kind vpn`)
+- **Headed or headless** — `launch.headed` on the named face; same lease model either way
+- **Page ops** — navigate, click, type, fill, press, scroll, screenshot, extract, dialogs, wait for load/element
+- **Shared chrome** — two clients on one profile get two tabs. `tabs` tags each page `owned_by_me` / `owned_by` / `unowned`. `new_tab` mints a lease. `switch_tab` to someone else's tab **peeks** (page info + screenshot, window stays put) unless you pass `steal=true`. `close_tab` only closes tabs you own
+- **Crash backstop** — `one_shot` leases expire; `browserctl reap` cleans them without killing a persistent browser that still has other tabs
 
-- One browser/process lease per worker. Many target leases may share that browser.
-- One mutating owner per target. Claiming an owned target → `TARGET_CONFLICT`.
-- Exclusive second browser lease → `LEASE_CONFLICT`. A compatible second bind **joins** and mints a new target.
-- No managed `default` worker for leased work.
-- No secrets in git, leases, or profile JSON.
-- CDP on localhost only.
-- Associate a named face only after proven login. Resolve never starts browsers or invents scratch.
+CDP stays on localhost. Cookies live in gitignored profile dirs. No secrets in lease JSON.
+
+## How the pieces fit
+
+```
+you
+  ├─ CLI  ./bin/browserctl launch|release|profiles …
+  └─ tool omp/cloak.ts   bind → drive → release
+           │
+           ▼
+     browserctl          mutex + named-profile registry
+           │             one process lease per worker
+           │             many tab leases on that process
+           ▼
+     daemon.sock         json-line rpc
+           │             pins the leased tab, then runs the action
+           ▼
+     Cloak / Chromium    one user-data dir, one CDP port
+```
+
+`launch` starts (or joins) the browser, mints a **tab lease**, and prints env. The daemon is already listening on `state/<worker>/daemon.sock`. Drive commands are `{ "action": "navigate", "target_id": "…", "url": "…" }`. `release` drops that tab; the process stays up if other tabs are still leased.
 
 ```text
-browser worker / named profile
-├── target lease → navigator a
-└── target lease → navigator b
+named profile / worker
+├── tab lease A   (you)
+└── tab lease B   (a sibling client)
 ```
 
-## Daemon socket
-
-`daemon/` holds the worker's CDP connection. Rpc is one json line on `state/<worker>/daemon.sock`:
-
-```json
-{ "action": "navigate", "target_id": "<optional>", "url": "https://example.com" }
-```
-
-If `target_id` is present, the daemon pins that CDP session under an `asyncio.Lock` and then runs the action. If omitted, the current session is used (doctor / legacy). Navigators never attach puppeteer, `xd://browser`, or a raw `cdp_url` to the shared port.
-
-## omp `cloak` tool
-
-One custom tool named `cloak` (`hidden: true`). Source: `omp/cloak.ts` (symlink into `~/.omp/agent/tools/`). Navigators list `tools: cloak, read, grep, glob, bash, write`. Coding sessions do not see `cloak` unless they list it.
-
-| action | role |
-|---|---|
-| `bind` / `release` | lease a named face, scratch, or site; drop this target only |
-| `navigate`, `click`, `type`, … | json-line to the worker daemon socket |
-
-Bind writes a sidecar `<session>.bind-profile.json` (`leaseId`, `targetId`, `worker`, `socket`, `cdp`). `cdp` is for humans/doctor. `cloak` never prints `app.cdp_url`. Drive after bind goes to the socket, not to a browser-open URL.
-
----
-
-## Quick start (CLI)
-
-Humans and orchestrators use `./bin/browserctl`. Navigators use `cloak` only — they do not shell this CLI.
+## Quick start
 
 ```bash
-# env-contract (lease id + worker + cdp for doctor)
+# anonymous scratch
 ./bin/browserctl launch --kind scratch --label demo --owner you --json
 ./bin/browserctl release --lease <id> --json
 
-# named face from a local registry (copy the example first)
+# named face (copy the example registry first)
 cp profiles/PROFILES.example.json profiles/PROFILES.json
 ./bin/browserctl profiles register lab-demo --kind scratch --label demo --description 'anon demo' --json
-./bin/browserctl profiles associate lab-demo example.com --json
+./bin/browserctl profiles associate lab-demo example.com --json   # after a real login
 ./bin/browserctl profiles resolve example.com --json
 ./bin/browserctl launch --profile lab-demo --owner you --json
 
 ./bin/browserctl list --json
 
-# finite job: one_shot is auto-reap eligible if the process dies
-./bin/browserctl launch --kind scratch --label demo --mode one_shot --owner orch --json
-# host admin (opt-in crash backstop): ./bin/browserctl-reap-timer install --enable --now
+# finite job: auto-reap if the process dies
+./bin/browserctl launch --kind scratch --label demo --mode one_shot --owner you --json
 ```
 
----
+From an agent, `cloak` is the same loop without shelling the CLI:
+
+```
+bind {profile | site | scratch:true}
+navigate / click / type / tabs / …
+release
+```
+
+## Tab sharing
+
+Same profile, two clients:
+
+| action | effect |
+|---|---|
+| `tabs` | census of every page, tagged by lease |
+| `new_tab` | create a tab **and** a lease for you |
+| `switch_tab` to your tab | drive it (brings it forward) |
+| `switch_tab` to a sibling | peek — no `activateTarget`, your pin stays |
+| `switch_tab` + `steal=true` | take the mutating lease, then drive |
+| `close_tab` | only your leases; also releases that lease |
+| click/type on a tab you don't hold | `TARGET_CONFLICT` |
+
+A second **browser** lock on the same worker with exclusive intent is `LEASE_CONFLICT`. A compatible second `launch` / `bind` **joins** and mints a new tab.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `bin/browserctl` | leases + `profiles` CLI |
+| `bin/browserctl` | leases + profile CLI |
 | `browserctl/` | manager, scratch/vpn adapters, registry |
-| `omp/cloak.ts` | OMP `cloak` tool (symlink into `~/.omp/agent/tools/`) |
-| `daemon/` | CDP harness + json-line rpc on `state/<worker>/daemon.sock` |
-| `vpn/` | gluetun compose + VPN browser spawn |
-| `profiles/PROFILES.example.json` | **tracked** anonymous demo registry (copy to `PROFILES.json`) |
-| `profiles/PROFILES.json` | **local** named selector registry (gitignored) |
-| `profiles/scratch/`, `profiles/vpn/` | **runtime** Cloak user-data (gitignored) |
-| `state/control/` | leases, locks (runtime, gitignored) |
+| `daemon/` | holds CDP; json-line rpc on `state/<worker>/daemon.sock` |
+| `omp/cloak.ts` | bind + drive + release as one tool |
+| `vpn/` | region SOCKS / gluetun helpers |
+| `profiles/PROFILES.example.json` | tracked demo registry — copy to `PROFILES.json` |
+| `profiles/PROFILES.json` | **local** named faces (gitignored) |
+| `profiles/scratch/`, `profiles/vpn/` | **runtime** user-data (gitignored) |
+| `state/control/` | leases and locks (runtime, gitignored) |
 
----
+## Env (from `launch --json`)
 
-## Env contract
+| Key | Meaning |
+|---|---|
+| `BROWSERCTL_LEASE_ID` | tab lease — this is what you `release` |
+| `BROWSERCTL_TARGET_ID` | owned CDP page |
+| `BROWSERCTL_BROWSER_LEASE_ID` | process lease |
+| `BROWSER_HARNESS_WORKER` | worker id / socket dirname |
+| `BROWSER_CDP_URL` | `http://127.0.0.1:93xx` — inspect, don't attach a second driver |
+| `BROWSER_TARGET_STATE` | `state/<worker>/control/active-target.json` |
+| `BROWSERCTL_PROFILE_NAME` | set only when launched with `--profile` |
 
-`BROWSERCTL_LEASE_ID` · `BROWSERCTL_TARGET_ID` · `BROWSERCTL_BROWSER_LEASE_ID` · `BROWSER_HARNESS_WORKER` · `BROWSER_CDP_URL` · `BROWSER_TARGET_STATE` · `BROWSER_OPS_ROOT` · `BROWSER_ALLOW_EVALUATE`
+Root: `--root` → `BROWSER_OPS_ROOT` → this checkout.
 
-Root discovery: `--root` → `BROWSER_OPS_ROOT` → this checkout. Ad-hoc debug: `./bin/start-daemon …` — not for leases. `BROWSER_CDP_URL` is for humans/doctor, not for navigator attach.
+## Docs
 
----
+- CLI sheet: [`docs/browserctl.md`](./docs/browserctl.md)
+- Drive path: [`docs/CONTRACT.md`](./docs/CONTRACT.md)
+- Identity: [`profiles/BINDING.md`](./profiles/BINDING.md)
+- Topology: [`docs/topology-brief.md`](./docs/topology-brief.md)
 
 ## Tests
 

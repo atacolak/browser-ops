@@ -1,9 +1,9 @@
 /**
- * cloak — the only OMP-facing Cloak API.
+ * cloak — bind a leased Cloak browser and drive the leased tab.
  *
- * Hidden from parent coding sessions unless listed. Navigators grant it in
- * agents/navigator.md. Bind via browserctl; drive via json-line on
- * state/<worker>/daemon.sock. Never attach xd://browser / puppeteer to CDP.
+ * Hidden unless an agent tools: list (or --tools) names it. Bind via
+ * browserctl; drive via json-line on state/<worker>/daemon.sock. Never
+ * attach a second CDP client to the shared port.
  *
  * Symlink: ~/.omp/agent/tools/cloak.ts → this file.
  */
@@ -275,10 +275,10 @@ function bindSummary(state: BindState, used: string, reused: boolean): string {
 	const verb = reused ? "Already bound" : "Bound";
 	return (
 		`${verb} ${used}. lease=${state.leaseId} target=${state.targetId} worker=${state.worker}. ` +
-		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased target. ` +
+		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased tab. ` +
 		`tabs lists every page tagged owned_by_me / owned_by:<lease> / unowned. ` +
 		`new_tab mints a new lease for you. switch_tab to a sibling is a peek unless steal=true. ` +
-		`Do not open xd://browser. release when the job is done.`
+		`Do not attach a CDP url. release when the job is done.`
 	);
 }
 
@@ -297,12 +297,12 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 		defaultInactive: true as const,
 		loadMode: "discoverable" as const,
 		description:
-			"Bind a leased Cloak browser and drive the leased tab through the browser-ops daemon socket. " +
+			"Bind a leased Cloak browser and drive the leased tab through the daemon socket. " +
 			"action=bind {site|profile|scratch} once per job; then action=navigate|click|type|… . " +
 			"tabs are tagged owned_by_me / owned_by / unowned. new_tab mints a lease. " +
-			"switch_tab to someone else's tab peeks (no activateTarget) unless steal=true. " +
-			"Do not run browserctl, do not open xd://browser, do not pass a cdp url. " +
-			"The Cloak stays up after yield. action=release only when the job is done.",
+			"switch_tab to someone else's tab peeks unless steal=true. " +
+			"Do not run browserctl, do not pass a cdp url. " +
+			"The browser stays up after yield. action=release only when the job is done.",
 		parameters: {
 			type: "object",
 			required: ["action"],

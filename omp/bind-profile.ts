@@ -33,7 +33,7 @@ export type BindState = {
 	cdp: string;
 	worker: string;
 	socket: string;
-	/** targetId → leaseId for every tab this navigator currently holds */
+	/** targetId → leaseId for every tab this client currently holds */
 	held?: Record<string, string>;
 };
 
