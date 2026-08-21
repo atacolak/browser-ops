@@ -13,10 +13,10 @@ Cloak lease plane: session leases + named profile registry + CDP daemon.
 | `bin/browserctl` | leases + named profile lookup |
 | `browserctl/` | manager, scratch/vpn adapters, `profiles.py` |
 | `omp/cloak.ts` | OMP navigator `cloak` tool (symlink to `~/.omp/agent/tools/`) |
-| `daemon/` | CDP harness + active-target publish |
+| `daemon/` | CDP harness + json-line rpc on `state/<worker>/daemon.sock` |
 | `vpn/` | geo SOCKS egress helpers |
-| `skills/domains/<site>/` | learned site procedures |
-| `profiles/PROFILES.json` | **tracked** named selector registry (no secrets) |
+| `profiles/PROFILES.example.json` | tracked anonymous demo registry |
+| `profiles/PROFILES.json` | **local** named faces (gitignored) |
 | `profiles/<kind>/` | **runtime** Cloak profile dirs (gitignored) |
 | `state/control/` | leases, locks (no secrets) |
 
