@@ -108,6 +108,49 @@ def require_live_lease(backend: Any, cmd: dict) -> dict[str, Any]:
     return row
 
 
+def retarget_live_lease(backend: Any, cmd: dict, new_target_id: str) -> dict[str, Any] | None:
+    """Rewrite this live target lease onto a replacement CDP page after chrome death."""
+    from browserctl.store import load_lease, save_lease, touch_lease
+    from browserctl.target_registry import release_target, upsert_target
+
+    if unmanaged(backend):
+        return None
+    lid = cmd_lease_id(cmd)
+    if not lid or not new_target_id:
+        return None
+    root = state_root_for(backend)
+    row = load_lease(root, lid)
+    if not row or row.get("status") != "active":
+        return None
+    old = str(row.get("target_id") or "")
+    worker = str(getattr(backend, "worker_id", "") or row.get("worker_id") or "")
+    if old == new_target_id:
+        return row
+    row = touch_lease(row)
+    row["target_id"] = new_target_id
+    env = dict(row.get("env") or {})
+    env["BROWSERCTL_TARGET_ID"] = new_target_id
+    row["env"] = env
+    save_lease(root, row)
+    if worker:
+        if old:
+            try:
+                release_target(root, worker, old)
+            except Exception:
+                pass
+        upsert_target(
+            root,
+            worker,
+            target_id=new_target_id,
+            owner=str(row.get("owner") or "omp-nav"),
+            lease_id=lid,
+            url=None,
+            make_active=True,
+        )
+    cmd["target_id"] = new_target_id
+    return row
+
+
 def _conflict(tid: str, ownership: str | None) -> None:
     raise DaemonError(
         "TARGET_CONFLICT",

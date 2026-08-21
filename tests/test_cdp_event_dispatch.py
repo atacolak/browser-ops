@@ -169,6 +169,30 @@ def test_handler_exception_does_not_kill_worker_or_commands():
     asyncio.run(_run())
 
 
+def test_cdp_error_reply_raises_instead_of_keyerror():
+    async def _run():
+        cdp = CDPClient("ws://127.0.0.1:9/devtools/browser", event_queue_size=8)
+        cdp._closed = False
+        cdp._ensure_event_pump()
+
+        async def _fake_send_frame(opcode: int, payload: bytes):
+            return None
+
+        cdp._send_frame = _fake_send_frame  # type: ignore[method-assign]
+        send_task = asyncio.create_task(cdp.send("Target.attachToTarget", {"targetId": "gone"}))
+        await asyncio.sleep(0.01)
+        cdp.dispatch_message({"id": cdp._msg_id, "error": {"message": "No target with given id"}})
+        try:
+            await send_task
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as e:
+            assert "No target with given id" in str(e)
+            assert "KeyError" not in str(e)
+        await cdp.close()
+
+    asyncio.run(_run())
+
+
 def test_sync_handler_supported():
     async def _run():
         cdp = CDPClient("ws://127.0.0.1:9/devtools/browser", event_queue_size=8)

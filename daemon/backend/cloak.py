@@ -641,11 +641,22 @@ class CloakBackend(BrowserBackend):
         """Pin the drive session to *target_id* for a mutating act.
 
         Reuses a mapped CDP session when already attached. Activates the
-        tab — this is drive, not peek.
+        tab — this is drive, not peek. If chrome was relaunched and the
+        stored id is gone, mint a replacement page (caller rewrites the lease).
         """
         if not target_id:
             return {"target_id": self.target_id, "session_id": self.session_id}
-        return await self.switch_tab(target_id)
+        try:
+            return await self.switch_tab(target_id)
+        except RuntimeError as e:
+            text = str(e)
+            if "No target with given id" not in text and "failed" not in text.lower():
+                raise
+            minted = await self.new_tab("about:blank")
+            minted = dict(minted)
+            minted["replaced_target_id"] = target_id
+            minted["retargeted"] = True
+            return minted
 
     async def _enable_session_domains(self, session_id: str | None) -> None:
         if self.cdp is None or not session_id:

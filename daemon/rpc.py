@@ -367,13 +367,18 @@ async def handle_client(
         await writer.drain()
 
     except Exception as e:
-        # Unexpected error — wrap in generic envelope
+        # Unexpected error — wrap in generic envelope. CDP wire failures are
+        # retryable disconnects, not mystery KeyError 'result'.
         traceback.print_exc(file=sys.stderr)
-        envelope = {
-            "code": "INTERNAL_ERROR",
-            "message": str(e),
-            "retryable": True,
-        }
+        msg = str(e)
+        if msg.startswith("CDP ") or "CDP connection" in msg or "CDP command timed out" in msg:
+            envelope = CDPDisconnectedError(msg).to_envelope()
+        else:
+            envelope = {
+                "code": "INTERNAL_ERROR",
+                "message": msg,
+                "retryable": True,
+            }
         try:
             writer.write((json.dumps(envelope) + "\n").encode())
             await writer.drain()
@@ -552,7 +557,13 @@ async def _pin_session(backend: BrowserBackend, action: str, cmd: dict) -> None:
         return
     pin = getattr(backend, "pin_target", None)
     if callable(pin):
-        await pin(str(tid))
+        pinned = await pin(str(tid))
+        if isinstance(pinned, dict) and pinned.get("retargeted"):
+            from tab_gate import retarget_live_lease
+
+            new_tid = str(pinned.get("target_id") or "")
+            if new_tid:
+                retarget_live_lease(backend, cmd, new_tid)
         return
     switch = getattr(backend, "switch_tab", None)
     if callable(switch):
@@ -579,8 +590,8 @@ async def _execute_action(backend: BrowserBackend, action: str, cmd: dict) -> di
             return await handle_switch_tab(backend, cmd)
         if action == "close_tab":
             return await handle_close_tab(backend, cmd)
-        await gate_mutate(backend, action, cmd)
         await _pin_session(backend, action, cmd)
+        await gate_mutate(backend, action, cmd)
         return await _execute_action_unlocked(backend, action, cmd)
 
 

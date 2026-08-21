@@ -275,16 +275,8 @@ class CDPClient:
     ) -> dict:
         """Send a CDP command and wait for response.
 
-        Args:
-            method: CDP method name (e.g. ``"Page.navigate"``).
-            params: Method parameters.
-            session_id: Optional session ID for attached targets.
-
-        Returns:
-            The full CDP response dict.
-
-        Raises:
-            RuntimeError: If the command times out after 30 seconds.
+        Returns the full CDP response dict. Raises RuntimeError on timeout
+        or when Chrome replies with an error object (no silent KeyError later).
         """
         self._msg_id += 1
         msg_id = self._msg_id
@@ -298,10 +290,15 @@ class CDPClient:
         await self._send_frame(1, json.dumps(msg).encode("utf-8"))
 
         try:
-            return await asyncio.wait_for(future, timeout=30.0)
+            reply = await asyncio.wait_for(future, timeout=30.0)
         except asyncio.TimeoutError:
             self._pending.pop(msg_id, None)
             raise RuntimeError(f"CDP command timed out: {method}")
+        err = reply.get("error") if isinstance(reply, dict) else None
+        if isinstance(err, dict):
+            text = err.get("message") or str(err)
+            raise RuntimeError(f"CDP {method} failed: {text}")
+        return reply
 
     def on_event(self, handler: EventHandler):
         """Register event handler (sync or async).
