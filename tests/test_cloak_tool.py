@@ -126,13 +126,16 @@ def test_build_drive_request_pins_target_and_maps_fill():
         console.log(JSON.stringify({ nav, fill, ping, sw }));
         """
     )
-    extra = {"lease_id": "L1", "held_lease_ids": ["L1"]}
+    extra = {"lease_id": "L1"}
     assert out["nav"] == {"action": "navigate", "target_id": "TAB", "url": "https://ex.test", **extra}
     assert out["fill"] == {"action": "fill_input", "target_id": "TAB", "text": "hi", "selector": "#q", **extra}
     assert out["ping"] == {"action": "ping", "target_id": "TAB", **extra}
     assert out["sw"]["dest_target_id"] == "OTHER"
     assert "steal" not in out["sw"]
     assert out["sw"]["target_id"] == "TAB"
+    assert out["sw"]["lease_id"] == "L1"
+    assert "held_lease_ids" not in out["nav"]
+    assert "held_lease_ids" not in out["sw"]
 
 
 def test_apply_tab_result_rewrites_sidecar():
@@ -278,6 +281,112 @@ def test_bind_reuses_alive_sidecar_without_launch(tmp_path: Path):
     assert out["result"]["state"]["targetId"] == "TAB-9"
     assert "launch" not in out["calls"]
     assert "status" in out["calls"]
+
+
+def test_bind_does_not_reuse_expiring_target_lease(tmp_path: Path):
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    sock = tmp_path / "daemon.sock"
+    sock.write_text("")
+    sidecar = Path(str(session) + ".bind-profile.json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                "leaseId": "L1",
+                "targetId": "TAB-9",
+                "worker": "scratch-demo",
+                "socket": str(sock),
+                "cdp": "http://127.0.0.1:9333",
+                "root": str(ROOT),
+            }
+        )
+    )
+    launch = {
+        "ok": True,
+        "env": {
+            "BROWSERCTL_LEASE_ID": "L2",
+            "BROWSER_CDP_URL": "http://127.0.0.1:9444",
+            "BROWSER_HARNESS_WORKER": "scratch-nav",
+            "BROWSERCTL_TARGET_ID": "TAB-new",
+        },
+        "lease": {
+            "lease_id": "L2",
+            "worker_id": "scratch-nav",
+            "target_id": "TAB-new",
+            "resources": {"socket": "/ops/state/scratch-nav/daemon.sock"},
+        },
+    }
+    script = """
+        import { createBinder, readSidecar } from "./omp/bind-profile.ts";
+        const calls = [];
+        const exec = async (_cmd, args) => {
+          calls.push(args[0]);
+          if (args[0] === "status") {
+            return { stdout: JSON.stringify({ ok: true, status: "expiring", scope: "target", target_id: "TAB-9" }), stderr: "", code: 0 };
+          }
+          if (args[0] === "launch") {
+            return { stdout: LAUNCH, stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "unexpected", code: 1 };
+        };
+        const binder = createBinder(exec, { isAlive: async () => true });
+        const ctx = { sessionManager: { getSessionFile: () => SESSION } };
+        const result = await binder.bind(ctx, { scratch: true });
+        const sc = readSidecar(ctx);
+        console.log(JSON.stringify({ result, sidecar: sc, calls }));
+    """.replace("SESSION", json.dumps(str(session))).replace("LAUNCH", json.dumps(json.dumps(launch)))
+    out = _run_bun(script)
+    assert out["result"]["ok"] is True
+    assert out["result"]["reused"] is False
+    assert out["sidecar"]["targetId"] == "TAB-new"
+    assert "status" in out["calls"]
+    assert "launch" in out["calls"]
+
+
+def test_switch_owned_tab_sends_that_tab_lease():
+    out = _run_bun(
+        """
+        import { buildDriveRequest } from "./omp/cloak.ts";
+        const sidecar = {
+          leaseId: "L1", targetId: "TAB", worker: "w", socket: "/s", cdp: "http://127.0.0.1:9", root: "/ops",
+          held: { TAB: "L1", OTHER: "L2" },
+        };
+        const sw = buildDriveRequest("switch_tab", sidecar, { action: "switch_tab", target_id: "OTHER" });
+        const peek = buildDriveRequest("switch_tab", sidecar, { action: "switch_tab", target_id: "SIB" });
+        const close = buildDriveRequest("close_tab", sidecar, { action: "close_tab", target_id: "OTHER" });
+        console.log(JSON.stringify({ sw, peek, close }));
+        """
+    )
+    assert out["sw"]["lease_id"] == "L2"
+    assert out["sw"]["target_id"] == "OTHER"
+    assert out["sw"]["dest_target_id"] == "OTHER"
+    assert "held_lease_ids" not in out["sw"]
+    assert out["peek"]["lease_id"] == "L1"
+    assert out["peek"]["dest_target_id"] == "SIB"
+    assert out["close"]["lease_id"] == "L2"
+    assert out["close"]["dest_target_id"] == "OTHER"
+
+
+def test_remint_tabs_ownership_from_sidecar_map():
+    out = _run_bun(
+        """
+        import { redactForModel, remintTabsOwnership } from "./omp/cloak.ts";
+        const sidecar = {
+          leaseId: "L1", targetId: "TAB", worker: "w", socket: "/s", cdp: "http://127.0.0.1:9", root: "/ops",
+          held: { TAB: "L1", NEW: "L2" },
+        };
+        const raw = {
+          tabs: [
+            { targetId: "TAB", ownership: "owned_by_me" },
+            { targetId: "NEW", ownership: "owned_by" },
+            { targetId: "SIB", ownership: "owned_by" },
+          ],
+        };
+        console.log(JSON.stringify(redactForModel(remintTabsOwnership(raw, sidecar))));
+        """
+    )
+    by_id = {t["targetId"]: t["ownership"] for t in out["tabs"]}
+    assert by_id == {"TAB": "owned_by_me", "NEW": "owned_by_me", "SIB": "owned_by"}
 
 
 def test_bind_does_not_reuse_revoked_target_lease(tmp_path: Path):

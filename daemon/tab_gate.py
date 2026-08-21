@@ -1,7 +1,9 @@
 """Lease-aware tab policy for daemon rpc.
 
-A live target lease is a mutation capability. Looking is free. Steal is
-not a socket verb — operator recovery is ``browserctl --steal``.
+One request, one capability: ``lease_id`` must be an active *target* lease
+on this worker, and for mutating drive it must own ``target_id``.
+Looking is free. Steal is not a socket verb — operator recovery is
+``browserctl --steal``.
 """
 
 from __future__ import annotations
@@ -24,16 +26,6 @@ READ_ONLY = frozenset({
 
 def cmd_lease_id(cmd: dict) -> str:
     return str(cmd.get("lease_id") or "").strip()
-
-
-def cmd_held_leases(cmd: dict) -> list[str]:
-    raw = cmd.get("held_lease_ids")
-    if isinstance(raw, list):
-        out = [str(x) for x in raw if x]
-        if out:
-            return out
-    lid = cmd_lease_id(cmd)
-    return [lid] if lid else []
 
 
 def dest_target_id(cmd: dict, *, fallback: str | None = None) -> str:
@@ -71,7 +63,6 @@ def classify(backend: Any, cmd: dict, target_id: str) -> dict[str, Any]:
         str(getattr(backend, "worker_id", "") or ""),
         target_id,
         caller_lease_id=cmd_lease_id(cmd),
-        held_lease_ids=set(cmd_held_leases(cmd)),
     )
 
 
@@ -83,14 +74,15 @@ def annotate(backend: Any, cmd: dict, tabs: list[dict[str, Any]] | None) -> list
         state_root=state_root_for(backend),
         worker_id=str(getattr(backend, "worker_id", "") or ""),
         caller_lease_id=cmd_lease_id(cmd),
-        held_lease_ids=cmd_held_leases(cmd),
     )
 
 
 def require_live_lease(backend: Any, cmd: dict) -> dict[str, Any]:
-    """Fail closed: mutating drive needs an active *target* lease on this worker."""
-    from browserctl.store import lease_scope
-    from browserctl.tab_policy import lease_is_active
+    """Fail closed: mutating drive needs an active target lease on this worker.
+
+    Occupancy (expiring) is not enough. Tab match is a separate check.
+    """
+    from browserctl.tab_policy import lease_can_mutate
 
     if unmanaged(backend):
         return {}
@@ -98,30 +90,31 @@ def require_live_lease(backend: Any, cmd: dict) -> dict[str, Any]:
     if not lid:
         raise DaemonError(
             "TARGET_LEASE_REQUIRED",
-            "mutating drive requires an active target lease_id",
+            "mutating drive requires an active target lease",
             retryable=False,
         )
-    row = lease_is_active(state_root_for(backend), lid)
+    worker = str(getattr(backend, "worker_id", "") or "") or None
+    row = lease_can_mutate(
+        state_root_for(backend),
+        lid,
+        worker_id=worker,
+    )
     if not row:
         raise DaemonError(
             "TARGET_LEASE_REQUIRED",
-            f"lease {lid} is missing or not active",
-            retryable=False,
-        )
-    if lease_scope(row) != "target":
-        raise DaemonError(
-            "TARGET_LEASE_REQUIRED",
-            "mutating drive requires a target lease, not a process lease",
-            retryable=False,
-        )
-    worker = str(getattr(backend, "worker_id", "") or "")
-    if worker and str(row.get("worker_id") or "") != worker:
-        raise DaemonError(
-            "TARGET_LEASE_REQUIRED",
-            f"lease {lid} is not on worker {worker}",
+            "stored target lease is missing, inactive, wrong worker, or not target-scoped",
             retryable=False,
         )
     return row
+
+
+def _conflict(tid: str, ownership: str | None) -> None:
+    raise DaemonError(
+        "TARGET_CONFLICT",
+        f"tab {tid} is {ownership}; peek with switch_tab, or operator recovery via browserctl --steal",
+        retryable=False,
+        page={"target_id": tid, "ownership": ownership},
+    )
 
 
 def _parent_lease(backend: Any, cmd: dict) -> dict[str, Any] | None:
@@ -171,19 +164,14 @@ async def gate_mutate(backend: Any, action: str, cmd: dict) -> None:
         return
     if unmanaged(backend):
         return
-    require_live_lease(backend, cmd)
+    row = require_live_lease(backend, cmd)
     tid = str(cmd.get("target_id") or getattr(backend, "target_id", "") or "").strip()
     if not tid:
         return
-    meta = classify(backend, cmd, tid)
-    if meta.get("ownership") == "owned_by_me":
+    if str(row.get("target_id") or "") == tid:
         return
-    raise DaemonError(
-        "TARGET_CONFLICT",
-        f"tab {tid} is {meta.get('ownership')}; peek with switch_tab, or operator recovery via browserctl --steal",
-        retryable=False,
-        page={"target_id": tid, "ownership": meta.get("ownership")},
-    )
+    meta = classify(backend, cmd, tid)
+    _conflict(tid, str(meta.get("ownership") or "owned_by"))
 
 
 async def handle_tabs(backend: Any, cmd: dict) -> dict:
@@ -236,21 +224,19 @@ async def handle_switch_tab(backend: Any, cmd: dict) -> dict:
         result["mode"] = "drive"
         result["ownership"] = "unowned"
         return result
-    require_live_lease(backend, cmd)
-    meta = classify(backend, cmd, dest)
-    own = meta.get("ownership")
-    if own == "owned_by_me":
+    row = require_live_lease(backend, cmd)
+    if str(row.get("target_id") or "") == dest:
         result = dict(await backend.switch_tab(dest))
         result["mode"] = "drive"
-        result["ownership"] = own
-        result["lease_id"] = meta.get("lease_id") or cmd_lease_id(cmd)
+        result["ownership"] = "owned_by_me"
+        result["lease_id"] = cmd_lease_id(cmd)
         return result
     peek = getattr(backend, "peek_tab", None)
     if callable(peek):
         result = dict(await peek(dest, path=cmd.get("path")))
     else:
         result = {"mode": "peek", "target_id": dest, "activated": False}
-    result["ownership"] = own
+    result["ownership"] = classify(backend, cmd, dest).get("ownership")
     result["hint"] = "read-only peek; operator recovery is browserctl launch --steal --target-id"
     return result
 
@@ -261,18 +247,14 @@ async def handle_close_tab(backend: Any, cmd: dict) -> dict:
         raise DaemonError("MISSING_PARAM", "close_tab requires dest_target_id")
     if unmanaged(backend):
         return dict(await backend.close_tab(dest))
-    require_live_lease(backend, cmd)
-    meta = classify(backend, cmd, dest)
-    if meta.get("ownership") != "owned_by_me":
-        raise DaemonError(
-            "TARGET_CONFLICT",
-            f"close_tab only on your leases (tab {dest} is {meta.get('ownership')})",
-            retryable=False,
-            page={"target_id": dest, "ownership": meta.get("ownership")},
-        )
+    row = require_live_lease(backend, cmd)
+    if str(row.get("target_id") or "") != dest:
+        meta = classify(backend, cmd, dest)
+        _conflict(dest, str(meta.get("ownership") or "owned_by"))
     result = dict(await backend.close_tab(dest))
-    if meta.get("lease_id"):
-        released = release_lease(backend, str(meta["lease_id"]))
-        result["released_lease"] = meta["lease_id"]
+    lid = str(row.get("lease_id") or cmd_lease_id(cmd) or "")
+    if lid:
+        released = release_lease(backend, lid)
+        result["released_lease"] = lid
         result["release"] = released
     return result

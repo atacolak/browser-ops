@@ -128,18 +128,41 @@ export function sendToDaemon(
 	return promise;
 }
 
+function heldMap(sidecar: BindState): Record<string, string> {
+	if (sidecar.held && Object.keys(sidecar.held).length) return sidecar.held;
+	if (sidecar.targetId && sidecar.leaseId) return { [sidecar.targetId]: sidecar.leaseId };
+	return {};
+}
+
+function leaseForTarget(sidecar: BindState, targetId: string | undefined): string | undefined {
+	const held = heldMap(sidecar);
+	if (targetId && held[targetId]) return held[targetId];
+	return sidecar.leaseId;
+}
+
+export function remintTabsOwnership(result: DaemonResponse, sidecar: BindState): DaemonResponse {
+	const tabs = result.tabs;
+	if (!Array.isArray(tabs)) return result;
+	const held = heldMap(sidecar);
+	return {
+		...result,
+		tabs: tabs.map((tab) => {
+			if (!tab || typeof tab !== "object") return tab;
+			const t = tab as Record<string, unknown>;
+			const tid = String(t.targetId || t.target_id || "");
+			if (tid && held[tid]) return { ...t, ownership: "owned_by_me" };
+			return t;
+		}),
+	};
+}
+
 export function buildDriveRequest(action: string, sidecar: BindState, params: CloakParams): DaemonRequest {
 	const wire = WIRE_ACTION[action] ?? action;
-	const held = sidecar.held && Object.keys(sidecar.held).length
-		? sidecar.held
-		: sidecar.targetId && sidecar.leaseId
-			? { [sidecar.targetId]: sidecar.leaseId }
-			: {};
+	const dest = action === "switch_tab" || action === "close_tab" ? params.target_id : undefined;
 	const req: DaemonRequest = {
 		action: wire,
-		target_id: sidecar.targetId,
-		lease_id: sidecar.leaseId,
-		held_lease_ids: Object.values(held),
+		target_id: dest && heldMap(sidecar)[dest] ? dest : sidecar.targetId,
+		lease_id: leaseForTarget(sidecar, dest),
 	};
 
 	if (action === "dialog" && params.accept !== undefined) {
@@ -401,19 +424,19 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				);
 			}
 			const visible = redactForModel(result) as DaemonResponse;
-			const body = JSON.stringify(visible);
 			if (isDaemonError(result)) {
 				if (result.code === "TARGET_LEASE_REQUIRED") {
 					binder.dropState(ctx);
 				}
-				const msg = visible.message || visible.error || body;
+				const msg = visible.message || visible.error || JSON.stringify(visible);
 				const code = result.code ? `[${result.code}] ` : "";
 				return textResult(`${code}${msg}`, { isError: true, details: visible });
 			}
 			if (action === "new_tab" || action === "switch_tab" || action === "close_tab") {
 				binder.storeState(ctx, applyTabResult(state, action, result));
 			}
-			return textResult(body, { details: visible });
+			const shown = action === "tabs" ? remintTabsOwnership(visible, state) : visible;
+			return textResult(JSON.stringify(shown), { details: shown });
 		},
 		async onSession(event: { reason: string }, ctx: SessionCtx) {
 			if (event.reason !== "shutdown") return;

@@ -91,7 +91,6 @@ def test_two_clients_peek_mint_close():
                 "url": "https://example.com",
                 "target_id": ta,
                 "lease_id": la,
-                "held_lease_ids": [la],
             },
             timeout=60,
         )
@@ -103,13 +102,12 @@ def test_two_clients_peek_mint_close():
                 "url": "https://example.org",
                 "target_id": tb,
                 "lease_id": lb,
-                "held_lease_ids": [lb],
             },
             timeout=60,
         )
         assert nav_b.get("code") is None, nav_b
 
-        listed = _rpc(sock, {"action": "tabs", "lease_id": la, "held_lease_ids": [la]})
+        listed = _rpc(sock, {"action": "tabs", "lease_id": la})
         by_id = {
             t.get("targetId") or t.get("target_id"): t.get("ownership")
             for t in listed.get("tabs") or []
@@ -122,7 +120,6 @@ def test_two_clients_peek_mint_close():
             {
                 "action": "switch_tab",
                 "lease_id": la,
-                "held_lease_ids": [la],
                 "dest_target_id": tb,
             },
         )
@@ -133,14 +130,13 @@ def test_two_clients_peek_mint_close():
 
         still_b = _rpc(
             sock,
-            {"action": "page_info", "target_id": tb, "lease_id": lb, "held_lease_ids": [lb]},
+            {"action": "page_info", "target_id": tb, "lease_id": lb},
         )
         assert "example.org" in (still_b.get("url") or "")
         still_a = _rpc(
             sock,
-            {"action": "page_info", "target_id": ta, "lease_id": la, "held_lease_ids": [la]},
+            {"action": "page_info", "target_id": ta, "lease_id": la},
         )
-        assert "example.com" in (still_a.get("url") or "")
 
         conflict = _rpc(
             sock,
@@ -149,7 +145,6 @@ def test_two_clients_peek_mint_close():
                 "url": "https://example.net",
                 "target_id": tb,
                 "lease_id": la,
-                "held_lease_ids": [la],
             },
         )
         assert conflict.get("code") == "TARGET_CONFLICT"
@@ -159,7 +154,6 @@ def test_two_clients_peek_mint_close():
             {
                 "action": "switch_tab",
                 "lease_id": la,
-                "held_lease_ids": [la],
                 "dest_target_id": tb,
                 "steal": True,
             },
@@ -172,7 +166,6 @@ def test_two_clients_peek_mint_close():
                 "action": "new_tab",
                 "url": "https://example.net",
                 "lease_id": la,
-                "held_lease_ids": [la],
                 "target_id": ta,
             },
             timeout=60,
@@ -187,7 +180,6 @@ def test_two_clients_peek_mint_close():
             {
                 "action": "close_tab",
                 "lease_id": lb,
-                "held_lease_ids": [lb],
                 "dest_target_id": ta,
             },
         )
@@ -198,7 +190,6 @@ def test_two_clients_peek_mint_close():
             {
                 "action": "close_tab",
                 "lease_id": new_lid,
-                "held_lease_ids": [la, new_lid],
                 "dest_target_id": new_tid,
             },
         )

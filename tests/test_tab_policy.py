@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "daemon"))
 
 from browserctl.errors import TargetConflict  # noqa: E402
 from browserctl.manager import Manager  # noqa: E402
-from browserctl.tab_policy import annotate_tabs, classify_target  # noqa: E402
+from browserctl.tab_policy import annotate_tabs, classify_target, lease_can_mutate, lease_is_active  # noqa: E402
 from rpc import DaemonError, _execute_action  # noqa: E402
 
 
@@ -188,7 +188,7 @@ def test_tabs_annotated_and_sibling_switch_is_peek(ctx):
         _execute_action(
             backend,
             "tabs",
-            {"lease_id": a["lease"]["lease_id"], "held_lease_ids": [a["lease"]["lease_id"]]},
+            {"lease_id": a["lease"]["lease_id"]},
         )
     )
     by_id = {t["targetId"]: t["ownership"] for t in listed["tabs"]}
@@ -201,7 +201,6 @@ def test_tabs_annotated_and_sibling_switch_is_peek(ctx):
             "switch_tab",
             {
                 "lease_id": a["lease"]["lease_id"],
-                "held_lease_ids": [a["lease"]["lease_id"]],
                 "dest_target_id": "TB",
             },
         )
@@ -219,7 +218,6 @@ def test_tabs_annotated_and_sibling_switch_is_peek(ctx):
                 "switch_tab",
                 {
                     "lease_id": a["lease"]["lease_id"],
-                    "held_lease_ids": [a["lease"]["lease_id"]],
                     "dest_target_id": "TB",
                     "steal": True,
                 },
@@ -243,7 +241,6 @@ def test_new_tab_mints_lease_and_close_only_own(ctx):
             {
                 "url": "https://new.example",
                 "lease_id": a["lease"]["lease_id"],
-                "held_lease_ids": [a["lease"]["lease_id"]],
             },
         )
     )
@@ -262,7 +259,6 @@ def test_new_tab_mints_lease_and_close_only_own(ctx):
                 "close_tab",
                 {
                     "lease_id": a["lease"]["lease_id"],
-                    "held_lease_ids": [a["lease"]["lease_id"], created["lease_id"]],
                     "dest_target_id": "TB",
                 },
             )
@@ -276,7 +272,6 @@ def test_new_tab_mints_lease_and_close_only_own(ctx):
             "close_tab",
             {
                 "lease_id": created["lease_id"],
-                "held_lease_ids": [a["lease"]["lease_id"], created["lease_id"]],
                 "dest_target_id": created["target_id"],
             },
         )
@@ -302,7 +297,6 @@ def test_navigate_on_sibling_target_is_conflict(ctx):
                     "url": "https://evil.example",
                     "target_id": "TB",
                     "lease_id": a["lease"]["lease_id"],
-                    "held_lease_ids": [a["lease"]["lease_id"]],
                 },
             )
         )
@@ -357,3 +351,60 @@ def test_browser_scope_lease_cannot_mutate(ctx):
         )
     )
     assert ok["navigated"] == "https://ok.example"
+
+
+def test_held_lease_ids_do_not_confer_ownership(ctx):
+    m, _fake, state = ctx
+    a = m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TA"})
+    b = m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TB"})
+    backend = RecordingTabs(state)
+    listed = _run(
+        _execute_action(
+            backend,
+            "tabs",
+            {
+                "lease_id": a["lease"]["lease_id"],
+                "held_lease_ids": [a["lease"]["lease_id"], b["lease"]["lease_id"]],
+            },
+        )
+    )
+    by_id = {t["targetId"]: t["ownership"] for t in listed["tabs"]}
+    assert by_id["TA"] == "owned_by_me"
+    assert by_id["TB"] == "owned_by"
+    with pytest.raises(DaemonError) as ei:
+        _run(
+            _execute_action(
+                backend,
+                "navigate",
+                {
+                    "url": "https://evil.example",
+                    "target_id": "TB",
+                    "lease_id": a["lease"]["lease_id"],
+                    "held_lease_ids": [a["lease"]["lease_id"], b["lease"]["lease_id"]],
+                },
+            )
+        )
+    assert ei.value.code == "TARGET_CONFLICT"
+
+
+def test_expiring_occupies_but_cannot_mutate(ctx):
+    m, _fake, state = ctx
+    a = m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TA"})
+    lid = a["lease"]["lease_id"]
+    m.mark_expiring(lease_id=lid)
+    row = lease_is_active(state, lid)
+    assert row is not None
+    assert row["status"] == "expiring"
+    assert lease_can_mutate(state, lid) is None
+    backend = RecordingTabs(state)
+    with pytest.raises(DaemonError) as ei:
+        _run(
+            _execute_action(
+                backend,
+                "navigate",
+                {"url": "https://ok.example", "target_id": "TA", "lease_id": lid},
+            )
+        )
+    assert ei.value.code == "TARGET_LEASE_REQUIRED"
+    mine = classify_target(state, "scratch-profile-providers", "TA", caller_lease_id=lid)
+    assert mine["ownership"] == "owned_by_me"

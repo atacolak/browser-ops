@@ -80,13 +80,13 @@ Same profile, two clients:
 |---|---|
 | `tabs` | census of every page, tagged by ownership (lease ids stay in the sidecar) |
 | `new_tab` | create a tab **and** a lease for you |
-| `switch_tab` to your tab | drive it (brings it forward) |
+| `switch_tab` to your tab | send that tab's lease; drive it (brings it forward) |
 | `switch_tab` to a sibling | peek — no `activateTarget`, your pin stays |
-| `close_tab` | only your leases; also releases that lease |
-| click/type on a tab you don't hold | `TARGET_CONFLICT` |
+| `close_tab` | only with that tab's lease; also releases it |
+| click/type on a tab this lease doesn't own | `TARGET_CONFLICT` |
 | socket `steal` | `STEAL_FORBIDDEN` — recovery is `browserctl launch --steal --target-id` |
 
-Mutating drive without a live **target** `lease_id` is `TARGET_LEASE_REQUIRED`. A process lease cannot mint or click. `--unmanaged` on the daemon is doctor/debug only. `cloak` never prints lease ids to the model.
+Mutating drive needs an **active** target `lease_id` that owns that tab. Occupancy (`expiring`) is not authority. A process lease cannot mint or click. `--unmanaged` on the daemon is doctor/debug only. `cloak` never prints lease ids to the model. The daemon does not take a held-lease set.
 
 A second **browser** lock on the same worker with exclusive intent is `LEASE_CONFLICT`. A compatible second `launch` / `bind` **joins** and mints a new tab.
 

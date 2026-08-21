@@ -195,10 +195,9 @@
       ]
     },
     "tabs": {
-      "description": "List all open page tabs with ownership tags (owned_by_me / owned_by / unowned). Alias for list_tabs.",
+      "description": "List all open page tabs with ownership tags (owned_by_me / owned_by / unowned). Alias for list_tabs. owned_by_me only when lease_id is the live target lease on that tab.",
       "params": {
-        "lease_id": "string | null — caller target lease; used to tag owned_by_me",
-        "held_lease_ids": "string[] | null — every lease this navigator currently holds"
+        "lease_id": "string | null — caller target lease; tags owned_by_me only for that exact lease"
       },
       "result": {
         "tabs": [
@@ -207,8 +206,7 @@
             "url": "string",
             "title": "string",
             "type": "page",
-            "ownership": "owned_by_me | owned_by | unowned",
-            "lease_id": "string | null"
+            "ownership": "owned_by_me | owned_by | unowned"
           }
         ]
       },
@@ -219,8 +217,7 @@
     "list_tabs": {
       "description": "List all open page tabs with ownership tags.",
       "params": {
-        "lease_id": "string | null",
-        "held_lease_ids": "string[] | null"
+        "lease_id": "string | null — caller target lease; tags owned_by_me only for that exact lease"
       },
       "result": {
         "tabs": "array"
@@ -244,7 +241,8 @@
       },
       "errors": [
         "CDP_DISCONNECTED",
-        "TARGET_CONFLICT"
+        "TARGET_CONFLICT",
+        "TARGET_LEASE_REQUIRED"
       ]
     },
     "switch_tab": {

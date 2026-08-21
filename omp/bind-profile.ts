@@ -133,7 +133,7 @@ export async function targetLeaseStillHeld(exec: ExecFn, state: BindState): Prom
 	const st = await runJson(exec, ["status", "--lease", state.leaseId], state.root);
 	if (!st.ok) return false;
 	const status = asString(st.data.status);
-	if (status && status !== "active" && status !== "expiring") return false;
+	if (status !== "active") return false;
 	const scope = asString(st.data.scope);
 	if (scope && scope !== "target") return false;
 	const tid = asString(st.data.target_id);

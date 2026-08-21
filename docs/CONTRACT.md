@@ -25,7 +25,7 @@ release
      → drop this tab lease (process stays if siblings remain)
 ```
 
-The client does not pass a CDP URL. Bind pins the tab. Later acts send `{action, target_id, …}` so two clients on one chrome cannot cross-mutate.
+The client does not pass a CDP URL. Bind pins the tab. Later acts send `{action, target_id, lease_id}` — one request, one capability. Two clients on one chrome cannot cross-mutate.
 
 ## Shared chrome
 
@@ -35,15 +35,15 @@ Two clients, same named profile:
 - **two** tab leases, two sidecars
 - `tabs` lists every page, tagged `owned_by_me` / `owned_by` / `unowned` (lease ids are never published)
 - `new_tab` mints a tab lease for the caller and rewrites the sidecar
-- `switch_tab` to **your** tab: drive (may bring it forward)
+- `switch_tab` to **your** tab: send that tab's lease — drive (may bring it forward)
 - `switch_tab` to a **sibling** or unowned tab: **peek** (page info + screenshot, no `activateTarget`, sidecar unchanged)
-- `close_tab` only on your leases (also releases that lease)
-- click/type on a tab you do not hold → `TARGET_CONFLICT`
+- `close_tab` only with that tab's lease (also releases it)
+- click/type on a tab this lease does not own → `TARGET_CONFLICT`
 - socket `steal` → `STEAL_FORBIDDEN`; operator recovery is `browserctl launch --steal --target-id`
-- mutating drive without a live **target** `lease_id` → `TARGET_LEASE_REQUIRED` (a process lease is not enough; `--unmanaged` is doctor/debug)
+- mutating drive without an **active** target `lease_id` → `TARGET_LEASE_REQUIRED` (`expiring` occupies, it does not authorize; a process lease is not enough; `--unmanaged` is doctor/debug)
 - `LEASE_CONFLICT` only on a second **process** lock with exclusive intent
 
-Ownership is by **lease id**. A lease id is a mutation capability. The model never sees it: `cloak` keeps tokens in the sidecar and strips them from tool text. Bind liveness is cdp + socket + the stored target lease still active and still owning that tab.
+Ownership is by **lease id**. A lease id is a mutation capability for exactly one tab. The model never sees it: `cloak` keeps tokens in the sidecar and strips them from tool text. `held` is cloak-local (target → lease) so it can send the dest tab's lease; the daemon does not take a held set. Bind liveness is cdp + socket + the stored target lease still `active` and still owning that tab.
 
 ## Sidecar
 
@@ -60,7 +60,7 @@ Ownership is by **lease id**. A lease id is a mutation capability. The model nev
 }
 ```
 
-`cdp` is for humans and doctor tools, not a second driver. `held` is every tab this client currently owns. `release` drops all of them.
+`cdp` is for humans and doctor tools, not a second driver. `held` is cloak-local: every tab this client currently owns. `release` drops all of them. The daemon never trusts a client-asserted held set.
 
 ## `cloak` actions
 
@@ -100,3 +100,4 @@ Tracked instead: `profiles/PROFILES.example.json`, `profiles/BINDING.md`, tests,
 5. `tabs` tags a sibling `owned_by` without leaking their lease id; `switch_tab` peeks; socket `steal` is `STEAL_FORBIDDEN`
 6. `new_tab` mints a tab lease; `close_tab` on a sibling is `TARGET_CONFLICT`
 7. mutate without `lease_id` → `TARGET_LEASE_REQUIRED`; `--unmanaged` still pins under the drive lock
+8. `expiring` occupies the tab but cannot click; asserting extra `held_lease_ids` does not confer `owned_by_me`
