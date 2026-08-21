@@ -517,7 +517,48 @@ def _gate_upload_file(cmd: dict) -> None:
         )
 
 
+def _ensure_drive_lock(backend: BrowserBackend) -> asyncio.Lock:
+    """Return the backend drive lock, creating one if the backend has none."""
+    lock = getattr(backend, "drive_lock", None)
+    if isinstance(lock, asyncio.Lock):
+        return lock
+    lock = asyncio.Lock()
+    try:
+        setattr(backend, "drive_lock", lock)
+    except Exception:
+        pass
+    return lock
+
+
+async def _pin_session(backend: BrowserBackend, action: str, cmd: dict) -> None:
+    """If ``target_id`` is set, pin the backend to that tab before the action.
+
+    ``switch_tab`` already switches, so it is left to the route. Omitted
+    ``target_id`` keeps the current session (legacy / doctor).
+    """
+    tid = cmd.get("target_id")
+    if tid is None or tid == "":
+        return
+    if action == "switch_tab":
+        return
+    pin = getattr(backend, "pin_target", None)
+    if callable(pin):
+        await pin(str(tid))
+        return
+    switch = getattr(backend, "switch_tab", None)
+    if callable(switch):
+        await switch(str(tid))
+
+
 async def _execute_action(backend: BrowserBackend, action: str, cmd: dict) -> dict:
+    """Pin (optional), then dispatch. Serialized on ``backend.drive_lock``."""
+    lock = _ensure_drive_lock(backend)
+    async with lock:
+        await _pin_session(backend, action, cmd)
+        return await _execute_action_unlocked(backend, action, cmd)
+
+
+async def _execute_action_unlocked(backend: BrowserBackend, action: str, cmd: dict) -> dict:
     """Look up the action and call the backend method with extracted params.
 
     Actions that don't map to a backend method (ping, run_procedure,

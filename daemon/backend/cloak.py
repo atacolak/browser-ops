@@ -105,6 +105,10 @@ class CloakBackend(BrowserBackend):
         self._main_frame_id: str | None = None
         self._refresh_task: asyncio.Task | None = None
         self._refresh_generation = 0
+        # Serialize drive RPCs so concurrent sockets cannot interleave
+        # switch_tab + action across sibling targets.
+        self.drive_lock = asyncio.Lock()
+        self._sessions: dict[str, str] = {}
 
     @staticmethod
     def _repo_state_root() -> Path:
@@ -429,6 +433,7 @@ class CloakBackend(BrowserBackend):
         })
         self.session_id = attach_result["result"]["sessionId"]
         self.target_id = pages[0]["targetId"]
+        self._sessions[self.target_id] = self.session_id
 
         # Enable CDP domains
         await asyncio.gather(
@@ -623,15 +628,47 @@ class CloakBackend(BrowserBackend):
         # Update our active session to the new tab
         self.session_id = result["session_id"]
         self.target_id = result["target_id"]
+        self._sessions[self.target_id] = self.session_id
         self._main_frame_id = None
         self._publish_active_target({"url": url, "target_id": self.target_id})
         self._schedule_target_refresh(delay=0.1, force=True)
         return result
 
+    async def pin_target(self, target_id: str) -> dict:
+        """Pin the drive session to *target_id*.
+
+        Reuses a mapped CDP session when we already attached to this tab so
+        a cloak click does not ``Target.attachToTarget`` every time. Falls
+        through to ``switch_tab`` when the id is new or not current.
+        """
+        if not target_id:
+            return {"target_id": self.target_id, "session_id": self.session_id}
+        if (
+            self.target_id == target_id
+            and self.session_id is not None
+            and self._sessions.get(target_id) == self.session_id
+        ):
+            return {"target_id": self.target_id, "session_id": self.session_id}
+        return await self.switch_tab(target_id)
+
     async def switch_tab(self, target_id: str) -> dict:
+        existing = self._sessions.get(target_id)
+        if existing is not None:
+            if self.target_id == target_id and self.session_id == existing:
+                return {"target_id": target_id, "session_id": existing}
+            if self.cdp is not None:
+                await self.cdp.send("Target.activateTarget", {"targetId": target_id})
+            self.session_id = existing
+            self.target_id = target_id
+            self._main_frame_id = None
+            self._publish_active_target({"target_id": self.target_id})
+            self._schedule_target_refresh(delay=0.05, force=True)
+            return {"target_id": target_id, "session_id": existing}
+
         result = await _tabs.switch_tab(self.cdp, self.session_id, target_id)
         self.session_id = result["session_id"]
         self.target_id = result["target_id"]
+        self._sessions[self.target_id] = self.session_id
         self._main_frame_id = None
         # Re-enable domains on the new session
         await asyncio.gather(
@@ -664,9 +701,12 @@ class CloakBackend(BrowserBackend):
     async def close_tab(self, target_id: str | None = None) -> dict:
         tid = target_id or self.target_id
         result = await _tabs.close_tab(self.cdp, self.session_id, tid)
+        if tid:
+            self._sessions.pop(tid, None)
         # If we closed the active tab, clear publication; caller should switch.
         if tid and self.target_id and tid == self.target_id:
             self.target_id = None
+            self.session_id = None
             self._publish_active_target(None, force=True)
         return result
 
