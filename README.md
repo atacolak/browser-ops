@@ -78,7 +78,7 @@ Same profile, two clients:
 
 | action | effect |
 |---|---|
-| `tabs` | census of every page, tagged by ownership (sibling lease ids are not published) |
+| `tabs` | census of every page, tagged by ownership (lease ids stay in the sidecar) |
 | `new_tab` | create a tab **and** a lease for you |
 | `switch_tab` to your tab | drive it (brings it forward) |
 | `switch_tab` to a sibling | peek — no `activateTarget`, your pin stays |
@@ -86,7 +86,7 @@ Same profile, two clients:
 | click/type on a tab you don't hold | `TARGET_CONFLICT` |
 | socket `steal` | `STEAL_FORBIDDEN` — recovery is `browserctl launch --steal --target-id` |
 
-Mutating drive without a live `lease_id` is `TARGET_LEASE_REQUIRED`. `--unmanaged` on the daemon is doctor/debug only.
+Mutating drive without a live **target** `lease_id` is `TARGET_LEASE_REQUIRED`. A process lease cannot mint or click. `--unmanaged` on the daemon is doctor/debug only. `cloak` never prints lease ids to the model.
 
 A second **browser** lock on the same worker with exclusive intent is `LEASE_CONFLICT`. A compatible second `launch` / `bind` **joins** and mints a new tab.
 

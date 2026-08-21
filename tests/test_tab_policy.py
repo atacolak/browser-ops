@@ -86,7 +86,7 @@ def test_classify_owned_by_lease_id_not_owner_string(ctx):
     assert by_id == {"TA": "owned_by_me", "TB": "owned_by", "NOPE": "unowned"}
     mine_row = next(t for t in tabs if t["targetId"] == "TA")
     sib_row = next(t for t in tabs if t["targetId"] == "TB")
-    assert mine_row.get("lease_id") == a["lease"]["lease_id"]
+    assert "lease_id" not in mine_row
     assert "lease_id" not in sib_row
 
 
@@ -320,3 +320,40 @@ def test_mutate_without_lease_id_is_required(ctx):
     backend.unmanaged = True
     out = _run(_execute_action(backend, "navigate", {"url": "https://ok.example", "target_id": "TA"}))
     assert out["navigated"] == "https://ok.example"
+
+
+def test_browser_scope_lease_cannot_mutate(ctx):
+    from browserctl.store import find_active_lease_for_worker
+
+    m, _fake, state = ctx
+    a = m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TA"})
+    browser = find_active_lease_for_worker(state, "scratch-profile-providers")
+    assert browser is not None
+    backend = RecordingTabs(state)
+    with pytest.raises(DaemonError) as ei:
+        _run(
+            _execute_action(
+                backend,
+                "navigate",
+                {"url": "https://evil.example", "target_id": "TA", "lease_id": browser["lease_id"]},
+            )
+        )
+    assert ei.value.code == "TARGET_LEASE_REQUIRED"
+    with pytest.raises(DaemonError) as ei2:
+        _run(
+            _execute_action(
+                backend,
+                "new_tab",
+                {"url": "https://evil.example", "lease_id": browser["lease_id"]},
+            )
+        )
+    assert ei2.value.code == "TARGET_LEASE_REQUIRED"
+    # real target lease still works
+    ok = _run(
+        _execute_action(
+            backend,
+            "navigate",
+            {"url": "https://ok.example", "target_id": "TA", "lease_id": a["lease"]["lease_id"]},
+        )
+    )
+    assert ok["navigated"] == "https://ok.example"

@@ -128,6 +128,18 @@ export function sidecarComplete(state: BindState | undefined): state is BindStat
 	return Boolean(state.leaseId && state.cdp && state.worker && state.socket && state.targetId);
 }
 
+export async function targetLeaseStillHeld(exec: ExecFn, state: BindState): Promise<boolean> {
+	if (!state.leaseId || !state.targetId) return false;
+	const st = await runJson(exec, ["status", "--lease", state.leaseId], state.root);
+	if (!st.ok) return false;
+	const status = asString(st.data.status);
+	if (status && status !== "active" && status !== "expiring") return false;
+	const scope = asString(st.data.scope);
+	if (scope && scope !== "target") return false;
+	const tid = asString(st.data.target_id);
+	return !tid || tid === state.targetId;
+}
+
 export async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {
 	const raw = (cdp || "").trim();
 	if (!raw) return false;
@@ -261,8 +273,12 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 
 	async function isAlive(state: BindState): Promise<boolean> {
 		if (!sidecarComplete(state)) return false;
-		if (opts?.isAlive) return opts.isAlive(state);
-		return cdpHttpAlive(exec, state.cdp);
+		if (opts?.isAlive) {
+			if (!(await opts.isAlive(state))) return false;
+		} else if (!(await cdpHttpAlive(exec, state.cdp))) {
+			return false;
+		}
+		return targetLeaseStillHeld(exec, state);
 	}
 
 	async function releaseState(ctx: SessionCtx): Promise<ReleaseResult> {
@@ -274,20 +290,20 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 		const failed: string[] = [];
 		for (const lid of ids) {
 			const released = await runJson(exec, ["release", "--lease", lid], state.root);
-			if (!released.ok) failed.push(`${lid}: ${released.raw.slice(0, 200)}`);
+			if (!released.ok) failed.push(lid);
 		}
 		dropState(ctx);
 		if (failed.length) {
 			return {
 				ok: false,
-				text: `release failed: ${failed.join("; ")}`,
+				text: `release failed for ${failed.length} tab lease(s).`,
 			};
 		}
 		return {
 			ok: true,
-			text: `Released ${ids.size} target lease(s)` +
+			text: `Released ${ids.size} tab(s)` +
 				(state.targetId ? ` last=${state.targetId}` : "") +
-				". shared browser stays up if other target leases remain.",
+				". shared browser stays up if other tab leases remain.",
 		};
 	}
 

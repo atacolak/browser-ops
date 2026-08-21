@@ -235,6 +235,8 @@ def test_bind_then_navigate_sends_json_line(tmp_path: Path):
     assert received[0]["target_id"] == "TAB-9"
     assert received[0]["url"] == "https://ex.test"
     assert received[0]["lease_id"] == "L1"
+    assert "lease_id" not in (out.get("details") or {})
+    assert "lease_id" not in out["text"]
 
 
 def test_bind_reuses_alive_sidecar_without_launch(tmp_path: Path):
@@ -242,7 +244,6 @@ def test_bind_reuses_alive_sidecar_without_launch(tmp_path: Path):
     session.write_text("")
     sock = tmp_path / "daemon.sock"
     sock.write_text("")
-
     sidecar = Path(str(session) + ".bind-profile.json")
     sidecar.write_text(
         json.dumps(
@@ -256,26 +257,105 @@ def test_bind_reuses_alive_sidecar_without_launch(tmp_path: Path):
             }
         )
     )
-    out = _run_bun(
-        f"""
-        import {{ createBinder }} from "./omp/bind-profile.ts";
+    script = """
+        import { createBinder } from "./omp/bind-profile.ts";
         const calls = [];
-        const exec = async (cmd, args) => {{
-          calls.push([cmd, args]);
-          return {{ stdout: "", stderr: "should not launch", code: 1 }};
-        }};
-        const binder = createBinder(exec, {{ isAlive: async () => true }});
-        const ctx = {{ sessionManager: {{ getSessionFile: () => {json.dumps(str(session))} }} }};
-        const result = await binder.bind(ctx, {{ scratch: true }});
-        console.log(JSON.stringify({{ result, calls }}));
-        """
-    )
+        const exec = async (cmd, args) => {
+          calls.push(args[0]);
+          if (args[0] === "status") {
+            return { stdout: JSON.stringify({ ok: true, status: "active", scope: "target", target_id: "TAB-9" }), stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "should not launch", code: 1 };
+        };
+        const binder = createBinder(exec, { isAlive: async () => true });
+        const ctx = { sessionManager: { getSessionFile: () => SESSION } };
+        const result = await binder.bind(ctx, { scratch: true });
+        console.log(JSON.stringify({ result, calls }));
+    """.replace("SESSION", json.dumps(str(session)))
+    out = _run_bun(script)
     assert out["result"]["ok"] is True
     assert out["result"]["reused"] is True
-    assert out["result"]["state"]["socket"] == str(sock)
-    assert out["result"]["state"]["worker"] == "scratch-demo"
     assert out["result"]["state"]["targetId"] == "TAB-9"
-    assert out["calls"] == []
+    assert "launch" not in out["calls"]
+    assert "status" in out["calls"]
+
+
+def test_bind_does_not_reuse_revoked_target_lease(tmp_path: Path):
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    sock = tmp_path / "daemon.sock"
+    sock.write_text("")
+    sidecar = Path(str(session) + ".bind-profile.json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                "leaseId": "L1",
+                "targetId": "TAB-9",
+                "worker": "scratch-demo",
+                "socket": str(sock),
+                "cdp": "http://127.0.0.1:9333",
+                "root": str(ROOT),
+            }
+        )
+    )
+    launch = {
+        "ok": True,
+        "env": {
+            "BROWSERCTL_LEASE_ID": "L2",
+            "BROWSER_CDP_URL": "http://127.0.0.1:9444",
+            "BROWSER_HARNESS_WORKER": "scratch-nav",
+            "BROWSERCTL_TARGET_ID": "TAB-new",
+        },
+        "lease": {
+            "lease_id": "L2",
+            "worker_id": "scratch-nav",
+            "target_id": "TAB-new",
+            "resources": {"socket": "/ops/state/scratch-nav/daemon.sock"},
+        },
+    }
+    script = """
+        import { createBinder, readSidecar } from "./omp/bind-profile.ts";
+        const calls = [];
+        const exec = async (_cmd, args) => {
+          calls.push(args[0]);
+          if (args[0] === "status") {
+            return { stdout: JSON.stringify({ ok: false, error: { code: "LEASE_NOT_FOUND" } }), stderr: "", code: 2 };
+          }
+          if (args[0] === "launch") {
+            return { stdout: LAUNCH, stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "unexpected", code: 1 };
+        };
+        const binder = createBinder(exec, { isAlive: async () => true });
+        const ctx = { sessionManager: { getSessionFile: () => SESSION } };
+        const result = await binder.bind(ctx, { scratch: true });
+        const sc = readSidecar(ctx);
+        console.log(JSON.stringify({ result, sidecar: sc, calls }));
+    """.replace("SESSION", json.dumps(str(session))).replace("LAUNCH", json.dumps(json.dumps(launch)))
+    out = _run_bun(script)
+    assert out["result"]["ok"] is True
+    assert out["result"]["reused"] is False
+    assert out["sidecar"]["targetId"] == "TAB-new"
+    assert "status" in out["calls"]
+    assert "launch" in out["calls"]
+
+
+def test_redact_for_model_strips_lease_tokens():
+    out = _run_bun(
+        """
+        import { redactForModel } from "./omp/cloak.ts";
+        const raw = {
+          target_id: "T",
+          ownership: "owned_by_me",
+          lease_id: "SECRET",
+          lease: { lease_id: "SECRET", browser_lease_id: "B" },
+          held_lease_ids: ["SECRET"],
+          page: { url: "https://ex.test", lease_id: "NESTED" },
+        };
+        console.log(JSON.stringify(redactForModel(raw)));
+        """
+    )
+    assert out == {"target_id": "T", "ownership": "owned_by_me", "page": {"url": "https://ex.test"}}
 
 
 def test_bind_writes_sidecar_socket_worker_target(tmp_path: Path):

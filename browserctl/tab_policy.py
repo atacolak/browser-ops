@@ -91,9 +91,7 @@ def annotate_tabs(
             held_lease_ids=held,
         )
         item["ownership"] = meta["ownership"]
-        if meta.get("ownership") == OWNED_BY_ME and meta.get("lease_id"):
-            item["lease_id"] = meta["lease_id"]
-        # sibling lease ids are capabilities — do not publish them
+        # lease ids are bearer tokens — cloak holds them, census does not
         out.append(item)
     return out
 

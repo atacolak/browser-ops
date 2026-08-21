@@ -33,17 +33,17 @@ Two clients, same named profile:
 
 - same worker / same daemon socket / same chrome
 - **two** tab leases, two sidecars
-- `tabs` lists every page, tagged `owned_by_me` / `owned_by` / `unowned` (sibling lease ids are not published)
+- `tabs` lists every page, tagged `owned_by_me` / `owned_by` / `unowned` (lease ids are never published)
 - `new_tab` mints a tab lease for the caller and rewrites the sidecar
 - `switch_tab` to **your** tab: drive (may bring it forward)
 - `switch_tab` to a **sibling** or unowned tab: **peek** (page info + screenshot, no `activateTarget`, sidecar unchanged)
 - `close_tab` only on your leases (also releases that lease)
 - click/type on a tab you do not hold → `TARGET_CONFLICT`
 - socket `steal` → `STEAL_FORBIDDEN`; operator recovery is `browserctl launch --steal --target-id`
-- mutating drive without a live `lease_id` → `TARGET_LEASE_REQUIRED` (`--unmanaged` is doctor/debug)
+- mutating drive without a live **target** `lease_id` → `TARGET_LEASE_REQUIRED` (a process lease is not enough; `--unmanaged` is doctor/debug)
 - `LEASE_CONFLICT` only on a second **process** lock with exclusive intent
 
-Ownership is by **lease id**. A lease id is a mutation capability.
+Ownership is by **lease id**. A lease id is a mutation capability. The model never sees it: `cloak` keeps tokens in the sidecar and strips them from tool text. Bind liveness is cdp + socket + the stored target lease still active and still owning that tab.
 
 ## Sidecar
 

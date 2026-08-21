@@ -88,7 +88,8 @@ def annotate(backend: Any, cmd: dict, tabs: list[dict[str, Any]] | None) -> list
 
 
 def require_live_lease(backend: Any, cmd: dict) -> dict[str, Any]:
-    """Fail closed: mutating drive needs an active tab lease on this worker."""
+    """Fail closed: mutating drive needs an active *target* lease on this worker."""
+    from browserctl.store import lease_scope
     from browserctl.tab_policy import lease_is_active
 
     if unmanaged(backend):
@@ -105,6 +106,12 @@ def require_live_lease(backend: Any, cmd: dict) -> dict[str, Any]:
         raise DaemonError(
             "TARGET_LEASE_REQUIRED",
             f"lease {lid} is missing or not active",
+            retryable=False,
+        )
+    if lease_scope(row) != "target":
+        raise DaemonError(
+            "TARGET_LEASE_REQUIRED",
+            "mutating drive requires a target lease, not a process lease",
             retryable=False,
         )
     worker = str(getattr(backend, "worker_id", "") or "")
@@ -211,7 +218,6 @@ async def handle_new_tab(backend: Any, cmd: dict) -> dict:
     created["mode"] = "drive"
     created["ownership"] = "owned_by_me"
     created["lease_id"] = lease.get("lease_id")
-    created["lease"] = lease
     return created
 
 

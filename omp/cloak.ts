@@ -218,6 +218,30 @@ export function isDaemonError(result: DaemonResponse): boolean {
 	return false;
 }
 
+const OPAQUE_KEYS = new Set([
+	"lease_id",
+	"leaseId",
+	"lease",
+	"held_lease_ids",
+	"held",
+	"browser_lease_id",
+	"browserLeaseId",
+	"targetLeaseId",
+	"released_lease",
+	"stolen_from",
+]);
+
+export function redactForModel(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(redactForModel);
+	if (!value || typeof value !== "object") return value;
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+		if (OPAQUE_KEYS.has(k)) continue;
+		out[k] = redactForModel(v);
+	}
+	return out;
+}
+
 function textResult(text: string, extra?: { isError?: boolean; details?: unknown }) {
 	return {
 		content: [{ type: "text" as const, text }],
@@ -271,10 +295,10 @@ export function applyTabResult(state: BindState, action: string, result: DaemonR
 function bindSummary(state: BindState, used: string, reused: boolean): string {
 	const verb = reused ? "Already bound" : "Bound";
 	return (
-		`${verb} ${used}. lease=${state.leaseId} target=${state.targetId} worker=${state.worker}. ` +
+		`${verb} ${used}. target=${state.targetId} worker=${state.worker}. ` +
 		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased tab. ` +
-		`tabs lists every page tagged owned_by_me / owned_by:<lease> / unowned. ` +
-		`new_tab mints a new lease for you. switch_tab to a sibling is a peek. ` +
+		`tabs lists every page tagged owned_by_me / owned_by / unowned. ` +
+		`new_tab opens a tab you own. switch_tab to a sibling is a peek. ` +
 		`Do not attach a CDP url. release when the job is done.`
 	);
 }
@@ -346,7 +370,6 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				if (!out.ok) return textResult(out.text, { isError: true });
 				return textResult(bindSummary(out.state, out.used, out.reused), {
 					details: {
-						leaseId: out.state.leaseId,
 						targetId: out.state.targetId,
 						worker: out.state.worker,
 						reused: out.reused,
@@ -377,16 +400,20 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 					{ isError: true },
 				);
 			}
-			const body = JSON.stringify(result);
+			const visible = redactForModel(result) as DaemonResponse;
+			const body = JSON.stringify(visible);
 			if (isDaemonError(result)) {
-				const msg = result.message || result.error || body;
+				if (result.code === "TARGET_LEASE_REQUIRED") {
+					binder.dropState(ctx);
+				}
+				const msg = visible.message || visible.error || body;
 				const code = result.code ? `[${result.code}] ` : "";
-				return textResult(`${code}${msg}`, { isError: true, details: result });
+				return textResult(`${code}${msg}`, { isError: true, details: visible });
 			}
 			if (action === "new_tab" || action === "switch_tab" || action === "close_tab") {
 				binder.storeState(ctx, applyTabResult(state, action, result));
 			}
-			return textResult(body, { details: result });
+			return textResult(body, { details: visible });
 		},
 		async onSession(event: { reason: string }, ctx: SessionCtx) {
 			if (event.reason !== "shutdown") return;
