@@ -20,10 +20,8 @@ so the "pack" is **one tool** named `cloak` whose `action` enum is bind + page o
 
 | session | how `cloak` appears |
 |---|---|
-| parent / coding agent | `hidden: true` — **not** in the model tool list unless `--tools cloak` or an agent lists it |
+| parent / coding agent | `hidden: true` + `defaultInactive: true` + `loadMode: discoverable` — **not** in `/tools` or the model tool list unless `--tools cloak` or an agent lists it |
 | `agents/navigator.md` | `tools: cloak, read, grep, glob, bash, write` (omp auto-adds `yield` / `hub`) |
-
-custom tools load from `~/.omp/agent/tools/*.ts` (symlink to `omp/cloak.ts`). a factory **may** return an array of tools from one file; each still has its own name and must be listed separately. we do **not** do that here — one name.
 
 `xd://browser` stays for coding agents (localhost UIs, relay). navigators do **not** get `browser`.
 

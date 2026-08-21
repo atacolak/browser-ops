@@ -233,7 +233,8 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 		name: "cloak",
 		label: "Cloak",
 		hidden: true as const,
-		loadMode: "essential" as const,
+		defaultInactive: true as const,
+		loadMode: "discoverable" as const,
 		description:
 			"Bind a leased Cloak browser and drive the leased tab through the browser-ops daemon socket. " +
 			"action=bind {site|profile|scratch} once per job; then action=navigate|click|type|… . " +

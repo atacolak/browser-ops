@@ -44,7 +44,7 @@ def _run_bun(script: str, *, env: dict[str, str] | None = None) -> dict:
     return json.loads(line)
 
 
-def test_cloak_factory_is_hidden_essential_named_cloak():
+def test_cloak_factory_is_hidden_discoverable_named_cloak():
     out = _run_bun(
         """
         import cloakTool from "./omp/cloak.ts";
@@ -52,11 +52,13 @@ def test_cloak_factory_is_hidden_essential_named_cloak():
         console.log(JSON.stringify({
           name: tool.name,
           hidden: tool.hidden,
+          defaultInactive: tool.defaultInactive,
           loadMode: tool.loadMode,
         }));
         """
     )
-    assert out == {"name": "cloak", "hidden": True, "loadMode": "essential"}
+    assert out == {"name": "cloak", "hidden": True, "defaultInactive": True, "loadMode": "discoverable"}
+
 
 
 def test_state_from_launch_sidecar_has_socket_worker_target():
