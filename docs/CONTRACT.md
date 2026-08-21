@@ -51,9 +51,15 @@ two navigators, same named profile:
 
 - same worker / same daemon socket / same chrome
 - **two** target leases, two sidecars (per omp session file)
-- neither `cloak` act may switch to the other's target
-- `TARGET_CONFLICT` if someone claims an owned target
+- `tabs` lists every page, each tagged `owned_by_me` / `owned_by` (+ lease id) / `unowned`
+- `new_tab` mints a **new target lease** for this navigator and rewrites the sidecar
+- `switch_tab` to **your** lease: drive (activateTarget ok)
+- `switch_tab` to a **sibling** or unowned tab: **peek** (page_info + screenshot, no `activateTarget`, sidecar unchanged) unless `steal=true`
+- `steal=true` transfers the target lease (`TARGET_CONFLICT` if omitted on an owned tab you then try to click)
+- `close_tab` only on your leases (also releases that target lease)
 - `LEASE_CONFLICT` only on a second **browser** exclusive acquire
+
+ownership is by **lease id**, not the shared owner string (`omp-nav`).
 
 ## Sidecar (not for the model)
 
@@ -65,11 +71,13 @@ two navigators, same named profile:
   "targetId": "...",
   "worker": "scratch-profile-lab-demo",
   "socket": "/abs/path/state/<worker>/daemon.sock",
-  "cdp": "http://127.0.0.1:93xx"
+  "cdp": "http://127.0.0.1:93xx",
+  "held": { "<targetId>": "<leaseId>" }
 }
 ```
 
 `cdp` is for humans/doctor, **not** for `xd://browser`. `cloak` never prints "open with app.cdp_url".
+`held` is every tab this navigator currently owns. `release` drops all of them.
 
 ## `cloak` actions
 
@@ -79,7 +87,8 @@ two navigators, same named profile:
 
 omit from v1 (keep on daemon, not on the tool): `evaluate` unless gated, `screenshot_base64`, `http_get`, `upload_file`, `run_procedure`, `drain_events`. add later.
 
-`new_tab` / `close_tab` / `switch_tab` on the tool must not steal a sibling's leased target. bind-minted id is the only default. `switch_tab` to an unleased id is an error.
+`switch_tab` params: `target_id` = destination tab, `steal` = take mutating ownership. peek is the default for tabs you do not hold.
+
 
 ## CLI vs agent
 
@@ -106,5 +115,7 @@ tracked instead: `profiles/PROFILES.example.json`, `profiles/BINDING.md`, tests,
 2. navigator A navigate ≠ navigator B url (daemon pin, not puppeteer first/visible).
 3. `cloak` omitted from a session whose agent `tools:` does not list it.
 4. `cloak` act without bind → error, no raw cdp connect.
+5. `tabs` tags sibling as `owned_by`; `switch_tab` without steal peeks (no activateTarget); `steal=true` transfers the lease.
+6. `new_tab` mints a target lease; `close_tab` on a sibling is `TARGET_CONFLICT`.
 
 mcp, herdr panes, and omp-alt `app.target_id` patches are **out of scope**.

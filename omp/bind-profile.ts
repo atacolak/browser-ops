@@ -33,6 +33,8 @@ export type BindState = {
 	cdp: string;
 	worker: string;
 	socket: string;
+	/** targetId → leaseId for every tab this navigator currently holds */
+	held?: Record<string, string>;
 };
 
 export type SessionCtx = { sessionManager?: { getSessionFile?: () => string | null } };
@@ -235,6 +237,7 @@ export function stateFromLaunch(
 		cdp,
 		worker,
 		socket,
+		held: { [targetId]: leaseId },
 	};
 }
 
@@ -267,18 +270,23 @@ export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 		if (!state) {
 			return { ok: true, text: "No bind to release." };
 		}
-		const released = await runJson(exec, ["release", "--lease", state.leaseId], state.root);
+		const ids = new Set<string>([state.leaseId, ...Object.values(state.held || {})].filter(Boolean));
+		const failed: string[] = [];
+		for (const lid of ids) {
+			const released = await runJson(exec, ["release", "--lease", lid], state.root);
+			if (!released.ok) failed.push(`${lid}: ${released.raw.slice(0, 200)}`);
+		}
 		dropState(ctx);
-		if (!released.ok) {
+		if (failed.length) {
 			return {
 				ok: false,
-				text: `release failed lease=${state.leaseId}: ${released.raw.slice(0, 800)}`,
+				text: `release failed: ${failed.join("; ")}`,
 			};
 		}
 		return {
 			ok: true,
-			text: `Released target lease=${state.leaseId}` +
-				(state.targetId ? ` target=${state.targetId}` : "") +
+			text: `Released ${ids.size} target lease(s)` +
+				(state.targetId ? ` last=${state.targetId}` : "") +
 				". shared browser stays up if other target leases remain.",
 		};
 	}

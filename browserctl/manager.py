@@ -204,13 +204,21 @@ class Manager:
         owner: str,
     ) -> str:
         requested = str(req.get("target_id") or "").strip()
+        steal = bool(req.get("steal"))
         if requested:
             held = find_target_lease(self.state_root, worker_id, requested)
             if held:
-                raise TargetConflict(
-                    worker_id, requested, holder=_public_lease(held)
+                if not steal:
+                    raise TargetConflict(
+                        worker_id, requested, holder=_public_lease(held)
+                    )
+                # Transfer mutating ownership; chrome tab stays.
+                self._release_target(
+                    held, force=True, stop_browser_if_last=False
                 )
             return requested
+        if steal:
+            raise InvalidRequest("--steal requires --target-id")
         owned = set(active_owned_targets(load_registry(self.state_root, worker_id)))
         return claim_unowned_or_create(cdp_url, owned_ids=owned)
 
@@ -333,6 +341,8 @@ class Manager:
         mode = (req.get("mode") or "persistent").strip()
         if mode not in ("persistent", "one_shot"):
             raise InvalidRequest("mode must be persistent|one_shot")
+        if req.get("steal") and not str(req.get("target_id") or "").strip():
+            raise InvalidRequest("--steal requires --target-id")
 
         ttl = req.get("ttl")
         if ttl is None:

@@ -14,11 +14,29 @@ async def list_tabs(cdp: Any, session_id: str | None = None) -> dict:
     return {"tabs": targets}
 
 
+async def attach_session(
+    cdp: Any,
+    target_id: str,
+    *,
+    activate: bool = False,
+) -> dict:
+    """Attach a CDP session to *target_id*.
+
+    ``activate=True`` brings the tab to the front (mutating drive).
+    Peek attaches without ``Target.activateTarget``.
+    """
+    if activate:
+        await cdp.send("Target.activateTarget", {"targetId": target_id})
+    attach = await cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+    new_session_id = attach["result"]["sessionId"]
+    return {"target_id": target_id, "session_id": new_session_id}
+
+
 async def new_tab(cdp: Any, session_id: str | None, url: str = "about:blank") -> dict:
     """Create a new tab, attach to it, and optionally navigate."""
     tid = (await cdp.send("Target.createTarget", {"url": "about:blank"}))["result"]["targetId"]
-    attach = await cdp.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
-    new_session_id = attach["result"]["sessionId"]
+    attached = await attach_session(cdp, tid, activate=True)
+    new_session_id = attached["session_id"]
     if url and url != "about:blank":
         from .nav import goto_url
         await goto_url(cdp, new_session_id, url)
@@ -27,10 +45,7 @@ async def new_tab(cdp: Any, session_id: str | None, url: str = "about:blank") ->
 
 async def switch_tab(cdp: Any, session_id: str | None, target_id: str) -> dict:
     """Activate an existing tab and attach a new session to it."""
-    await cdp.send("Target.activateTarget", {"targetId": target_id})
-    attach = await cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-    new_session_id = attach["result"]["sessionId"]
-    return {"target_id": target_id, "session_id": new_session_id}
+    return await attach_session(cdp, target_id, activate=True)
 
 
 async def close_tab(cdp: Any, session_id: str | None, target_id: str) -> dict:

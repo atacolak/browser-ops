@@ -195,9 +195,10 @@
       ]
     },
     "tabs": {
-      "description": "List all open page tabs. Alias for list_tabs.",
+      "description": "List all open page tabs with ownership tags (owned_by_me / owned_by / unowned). Alias for list_tabs.",
       "params": {
-        "target_id": "string | null — optional pin; if set, switch/reuse this CDP target under the drive lock before the action; omit to keep the current session"
+        "lease_id": "string | null — caller target lease; used to tag owned_by_me",
+        "held_lease_ids": "string[] | null — every lease this navigator currently holds"
       },
       "result": {
         "tabs": [
@@ -205,7 +206,9 @@
             "targetId": "string",
             "url": "string",
             "title": "string",
-            "type": "page"
+            "type": "page",
+            "ownership": "owned_by_me | owned_by | unowned",
+            "lease_id": "string | null"
           }
         ]
       },
@@ -214,9 +217,10 @@
       ]
     },
     "list_tabs": {
-      "description": "List all open page tabs.",
+      "description": "List all open page tabs with ownership tags.",
       "params": {
-        "target_id": "string | null — optional pin; if set, switch/reuse this CDP target under the drive lock before the action; omit to keep the current session"
+        "lease_id": "string | null",
+        "held_lease_ids": "string[] | null"
       },
       "result": {
         "tabs": "array"
@@ -226,43 +230,57 @@
       ]
     },
     "new_tab": {
-      "description": "Create a new tab, attach to it, and optionally navigate to a URL.",
+      "description": "Create a new tab and mint a target lease for the caller. Rewrites the sidecar.",
       "params": {
         "url": "string (default: about:blank)",
-        "target_id": "string | null — optional pin; if set, switch/reuse this CDP target under the drive lock before the action; omit to keep the current session"
+        "lease_id": "string — parent target lease (join worker)"
       },
       "result": {
         "target_id": "string",
-        "session_id": "string"
-      },
-      "errors": [
-        "CDP_DISCONNECTED"
-      ]
-    },
-    "switch_tab": {
-      "description": "Activate an existing tab and attach a session to it. Enables CDP domains on the new session.",
-      "params": {
-        "target_id": "string — tab to activate (also the pin id for this command)"
-      },
-      "result": {
-        "target_id": "string",
-        "session_id": "string"
+        "session_id": "string",
+        "mode": "drive",
+        "ownership": "owned_by_me",
+        "lease_id": "string"
       },
       "errors": [
         "CDP_DISCONNECTED",
-        "TAB_NOT_FOUND"
+        "TARGET_CONFLICT"
+      ]
+    },
+    "switch_tab": {
+      "description": "Drive your tab, peek a sibling (no activateTarget), or steal=true to take mutating ownership.",
+      "params": {
+        "dest_target_id": "string — tab to peek/drive/steal",
+        "steal": "boolean — take mutating ownership",
+        "lease_id": "string — caller target lease",
+        "path": "string | null — peek screenshot path"
+      },
+      "result": {
+        "target_id": "string",
+        "mode": "drive | peek | steal",
+        "ownership": "owned_by_me | owned_by | unowned",
+        "activated": "boolean"
+      },
+      "errors": [
+        "CDP_DISCONNECTED",
+        "TAB_NOT_FOUND",
+        "TARGET_CONFLICT",
+        "MISSING_PARAM"
       ]
     },
     "close_tab": {
-      "description": "Close a tab. If no target_id is provided, closes the current tab.",
+      "description": "Close a tab you own and release its target lease. Sibling close is TARGET_CONFLICT.",
       "params": {
-        "target_id": "string | null — tab to close; if set, pin to it under the drive lock first; omit to close the current tab"
+        "dest_target_id": "string — tab to close",
+        "lease_id": "string — caller target lease"
       },
       "result": {
-        "closed": "string"
+        "closed": "string",
+        "released_lease": "string"
       },
       "errors": [
-        "CDP_DISCONNECTED"
+        "CDP_DISCONNECTED",
+        "TARGET_CONFLICT"
       ]
     },
     "dialog": {

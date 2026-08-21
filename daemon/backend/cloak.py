@@ -625,31 +625,34 @@ class CloakBackend(BrowserBackend):
 
     async def new_tab(self, url: str = "about:blank") -> dict:
         result = await _tabs.new_tab(self.cdp, self.session_id, url)
-        # Update our active session to the new tab
         self.session_id = result["session_id"]
         self.target_id = result["target_id"]
         self._sessions[self.target_id] = self.session_id
         self._main_frame_id = None
+        await self._enable_session_domains(self.session_id)
         self._publish_active_target({"url": url, "target_id": self.target_id})
         self._schedule_target_refresh(delay=0.1, force=True)
         return result
 
     async def pin_target(self, target_id: str) -> dict:
-        """Pin the drive session to *target_id*.
+        """Pin the drive session to *target_id* for a mutating act.
 
-        Reuses a mapped CDP session when we already attached to this tab so
-        a cloak click does not ``Target.attachToTarget`` every time. Falls
-        through to ``switch_tab`` when the id is new or not current.
+        Reuses a mapped CDP session when already attached. Activates the
+        tab — this is drive, not peek.
         """
         if not target_id:
             return {"target_id": self.target_id, "session_id": self.session_id}
-        if (
-            self.target_id == target_id
-            and self.session_id is not None
-            and self._sessions.get(target_id) == self.session_id
-        ):
-            return {"target_id": self.target_id, "session_id": self.session_id}
         return await self.switch_tab(target_id)
+
+    async def _enable_session_domains(self, session_id: str | None) -> None:
+        if self.cdp is None or not session_id:
+            return
+        await asyncio.gather(
+            self.cdp.send("Page.enable", session_id=session_id),
+            self.cdp.send("DOM.enable", session_id=session_id),
+            self.cdp.send("Runtime.enable", session_id=session_id),
+            self.cdp.send("Network.enable", session_id=session_id),
+        )
 
     async def switch_tab(self, target_id: str) -> dict:
         existing = self._sessions.get(target_id)
@@ -670,13 +673,7 @@ class CloakBackend(BrowserBackend):
         self.target_id = result["target_id"]
         self._sessions[self.target_id] = self.session_id
         self._main_frame_id = None
-        # Re-enable domains on the new session
-        await asyncio.gather(
-            self.cdp.send("Page.enable", session_id=self.session_id),
-            self.cdp.send("DOM.enable", session_id=self.session_id),
-            self.cdp.send("Runtime.enable", session_id=self.session_id),
-            self.cdp.send("Network.enable", session_id=self.session_id),
-        )
+        await self._enable_session_domains(self.session_id)
         try:
             tree = await self.cdp.send("Page.getFrameTree", session_id=self.session_id)
             frame = (
@@ -698,12 +695,46 @@ class CloakBackend(BrowserBackend):
         self._schedule_target_refresh(delay=0.05, force=True)
         return result
 
+    async def peek_tab(self, target_id: str, *, path: str | None = None) -> dict:
+        """Read a tab without becoming its driver and without activateTarget."""
+        if not target_id:
+            raise ValueError("peek_tab requires target_id")
+        prev_tid = self.target_id
+        prev_sid = self.session_id
+        attached = await _tabs.attach_session(self.cdp, target_id, activate=False)
+        sid = attached["session_id"]
+        self._sessions[target_id] = sid
+        await self._enable_session_domains(sid)
+        self.session_id = sid
+        self.target_id = target_id
+        try:
+            info = await _nav.page_info(self.cdp, sid, self.dialog)
+            if isinstance(info, dict):
+                info = dict(info)
+                info["target_id"] = target_id
+            if not path:
+                shot_dir = Path(self._state_root) / self.worker_id / "shots"
+                shot_dir.mkdir(parents=True, exist_ok=True)
+                path = str(shot_dir / f"peek-{target_id[:16]}.png")
+            shot = await _capture.capture_screenshot(
+                self.cdp, sid, path=path, base64=False
+            )
+            return {
+                "mode": "peek",
+                "target_id": target_id,
+                "activated": False,
+                "page": info,
+                "screenshot": shot,
+            }
+        finally:
+            self.session_id = prev_sid
+            self.target_id = prev_tid
+
     async def close_tab(self, target_id: str | None = None) -> dict:
         tid = target_id or self.target_id
         result = await _tabs.close_tab(self.cdp, self.session_id, tid)
         if tid:
             self._sessions.pop(tid, None)
-        # If we closed the active tab, clear publication; caller should switch.
         if tid and self.target_id and tid == self.target_id:
             self.target_id = None
             self.session_id = None

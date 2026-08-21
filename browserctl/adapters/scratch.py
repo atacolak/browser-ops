@@ -283,6 +283,16 @@ def _wait_cdp(port: int, *, timeout: float = 20.0) -> bool:
     return False
 
 
+def _wait_socket(path: Path, *, timeout: float = 10.0) -> bool:
+    """Wait until the daemon unix socket exists (CDP can be up first)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _strict_child(path: Path, parent: Path) -> bool:
     try:
         r, pr = path.resolve(), parent.resolve()
@@ -457,15 +467,20 @@ def acquire(request: dict[str, Any]) -> dict[str, Any]:
                 port = None
                 time.sleep(0.05 * (attempt + 1))
                 continue
-        # outside lock: wait for CDP
+        # outside lock: wait for CDP, then IPC socket (listen is after CDP)
         if no_start:
             break
         assert port is not None
-        if _wait_cdp(port, timeout=20.0):
+        sock = state_dir / "daemon.sock"
+        if _wait_cdp(port, timeout=20.0) and _wait_socket(sock, timeout=10.0):
             daemon = "running"
             break
         # bind failed or daemon died — kill stray, drop reservation, retry
-        last_err = f"CDP {port} not live after start"
+        last_err = (
+            f"CDP {port} not live after start"
+            if not _cdp_alive(port)
+            else f"daemon.sock missing after CDP {port} ({sock})"
+        )
         _kill_pids(_daemon_pids(worker_id) + _chrome_pids(profile_dir))
         with port_alloc_mutex(state_root, timeout=30.0):
             _release_reserved_port(state_root, port)

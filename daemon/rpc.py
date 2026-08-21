@@ -173,14 +173,16 @@ def _new_tab_params(cmd: dict) -> dict:
 
 
 def _switch_tab_params(cmd: dict) -> dict:
-    tid = cmd.get("target_id")
-    if tid is None:
-        raise DaemonError("MISSING_PARAM", "switch_tab requires target_id")
-    return {"target_id": tid}
+    tid = cmd.get("dest_target_id") or cmd.get("switch_to") or cmd.get("target_id")
+    if tid is None or tid == "":
+        raise DaemonError("MISSING_PARAM", "switch_tab requires dest_target_id")
+    return {"target_id": tid, "steal": bool(cmd.get("steal"))}
 
 
 def _close_tab_params(cmd: dict) -> dict:
-    return {"target_id": cmd.get("target_id")}
+    return {
+        "target_id": cmd.get("dest_target_id") or cmd.get("target_id"),
+    }
 
 
 def _dialog_params(cmd: dict) -> dict:
@@ -533,13 +535,20 @@ def _ensure_drive_lock(backend: BrowserBackend) -> asyncio.Lock:
 async def _pin_session(backend: BrowserBackend, action: str, cmd: dict) -> None:
     """If ``target_id`` is set, pin the backend to that tab before the action.
 
-    ``switch_tab`` already switches, so it is left to the route. Omitted
-    ``target_id`` keeps the current session (legacy / doctor).
+    Tab-policy actions (switch/peek/new/close/list) own their attach.
+    Omitted ``target_id`` keeps the current session (legacy / doctor).
     """
+    if action in {
+        "switch_tab",
+        "peek_tab",
+        "new_tab",
+        "close_tab",
+        "tabs",
+        "list_tabs",
+    }:
+        return
     tid = cmd.get("target_id")
     if tid is None or tid == "":
-        return
-    if action == "switch_tab":
         return
     pin = getattr(backend, "pin_target", None)
     if callable(pin):
@@ -552,8 +561,25 @@ async def _pin_session(backend: BrowserBackend, action: str, cmd: dict) -> None:
 
 async def _execute_action(backend: BrowserBackend, action: str, cmd: dict) -> dict:
     """Pin (optional), then dispatch. Serialized on ``backend.drive_lock``."""
+    from tab_gate import (
+        gate_mutate,
+        handle_close_tab,
+        handle_new_tab,
+        handle_switch_tab,
+        handle_tabs,
+    )
+
     lock = _ensure_drive_lock(backend)
     async with lock:
+        if action in ("tabs", "list_tabs"):
+            return await handle_tabs(backend, cmd)
+        if action == "new_tab":
+            return await handle_new_tab(backend, cmd)
+        if action == "switch_tab":
+            return await handle_switch_tab(backend, cmd)
+        if action == "close_tab":
+            return await handle_close_tab(backend, cmd)
+        await gate_mutate(backend, action, cmd)
         await _pin_session(backend, action, cmd)
         return await _execute_action_unlocked(backend, action, cmd)
 

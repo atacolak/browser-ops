@@ -96,6 +96,10 @@ def _request_from_launch_args(args: argparse.Namespace) -> dict[str, Any]:
     }
     if getattr(args, "auto_reap", False):
         req["auto_reap"] = True
+    if getattr(args, "target_id", None):
+        req["target_id"] = str(args.target_id).strip()
+    if getattr(args, "steal", False):
+        req["steal"] = True
     if getattr(args, "profile", None):
         req["profile_name"] = args.profile
         return req
@@ -346,6 +350,17 @@ def _add_lease_flags(p: argparse.ArgumentParser) -> None:
         "--auto-reap",
         action="store_true",
         help="mark persistent lease eligible for scheduled reap",
+    )
+    p.add_argument(
+        "--target-id",
+        default=None,
+        metavar="ID",
+        help="claim this chrome target (join/steal); omit to mint/reclaim",
+    )
+    p.add_argument(
+        "--steal",
+        action="store_true",
+        help="take mutating ownership of --target-id from its current lease",
     )
 
 

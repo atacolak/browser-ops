@@ -69,6 +69,10 @@ export type CloakParams = {
 	timeout?: number;
 	accept?: boolean;
 	prompt_text?: string;
+	/** tab to peek / steal / close (not the bound drive pin) */
+	target_id?: string;
+	/** take mutating ownership of target_id (switch_tab only) */
+	steal?: boolean;
 };
 
 export type DaemonRequest = {
@@ -128,9 +132,16 @@ export function sendToDaemon(
 
 export function buildDriveRequest(action: string, sidecar: BindState, params: CloakParams): DaemonRequest {
 	const wire = WIRE_ACTION[action] ?? action;
+	const held = sidecar.held && Object.keys(sidecar.held).length
+		? sidecar.held
+		: sidecar.targetId && sidecar.leaseId
+			? { [sidecar.targetId]: sidecar.leaseId }
+			: {};
 	const req: DaemonRequest = {
 		action: wire,
 		target_id: sidecar.targetId,
+		lease_id: sidecar.leaseId,
+		held_lease_ids: Object.values(held),
 	};
 
 	if (action === "dialog" && params.accept !== undefined) {
@@ -180,6 +191,12 @@ export function buildDriveRequest(action: string, sidecar: BindState, params: Cl
 			if (params.accept !== undefined) req.accept = params.accept;
 			if (params.prompt_text !== undefined) req.prompt_text = params.prompt_text;
 			break;
+		case "switch_tab":
+		case "close_tab":
+			if (params.target_id !== undefined) req.dest_target_id = params.target_id;
+			if (params.path !== undefined) req.path = params.path;
+			if (action === "switch_tab" && params.steal) req.steal = true;
+			break;
 		default:
 			break;
 	}
@@ -212,12 +229,56 @@ function textResult(text: string, extra?: { isError?: boolean; details?: unknown
 	};
 }
 
+export function applyTabResult(state: BindState, action: string, result: DaemonResponse): BindState {
+	const held: Record<string, string> = { ...(state.held || {}) };
+	if (state.targetId && state.leaseId && !held[state.targetId]) {
+		held[state.targetId] = state.leaseId;
+	}
+	const tid = typeof result.target_id === "string" ? result.target_id : undefined;
+	const lid = typeof result.lease_id === "string" ? result.lease_id : undefined;
+	const mode = typeof result.mode === "string" ? result.mode : undefined;
+
+	if (action === "new_tab" && tid && lid) {
+		held[tid] = lid;
+		return { ...state, targetId: tid, leaseId: lid, targetLeaseId: lid, held };
+	}
+	if (action === "switch_tab") {
+		if (mode === "peek") return state;
+		if (tid && lid) {
+			held[tid] = lid;
+			return { ...state, targetId: tid, leaseId: lid, targetLeaseId: lid, held };
+		}
+		return state;
+	}
+	if (action === "close_tab") {
+		const closed = typeof result.closed === "string" ? result.closed : tid;
+		const released = typeof result.released_lease === "string" ? result.released_lease : undefined;
+		if (closed) delete held[closed];
+		if (released) {
+			for (const [k, v] of Object.entries(held)) {
+				if (v === released) delete held[k];
+			}
+		}
+		if (closed && closed === state.targetId) {
+			const nextTid = Object.keys(held)[0];
+			if (nextTid) {
+				return { ...state, targetId: nextTid, leaseId: held[nextTid], targetLeaseId: held[nextTid], held };
+			}
+			return { ...state, targetId: undefined, held };
+		}
+		return { ...state, held };
+	}
+	return state;
+}
+
 function bindSummary(state: BindState, used: string, reused: boolean): string {
 	const verb = reused ? "Already bound" : "Bound";
 	return (
 		`${verb} ${used}. lease=${state.leaseId} target=${state.targetId} worker=${state.worker}. ` +
-		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased target on the daemon socket. ` +
-		`Do not open xd://browser or attach to a CDP port. release only when the job is done.`
+		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased target. ` +
+		`tabs lists every page tagged owned_by_me / owned_by:<lease> / unowned. ` +
+		`new_tab mints a new lease for you. switch_tab to a sibling is a peek unless steal=true. ` +
+		`Do not open xd://browser. release when the job is done.`
 	);
 }
 
@@ -238,6 +299,8 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 		description:
 			"Bind a leased Cloak browser and drive the leased tab through the browser-ops daemon socket. " +
 			"action=bind {site|profile|scratch} once per job; then action=navigate|click|type|… . " +
+			"tabs are tagged owned_by_me / owned_by / unowned. new_tab mints a lease. " +
+			"switch_tab to someone else's tab peeks (no activateTarget) unless steal=true. " +
 			"Do not run browserctl, do not open xd://browser, do not pass a cdp url. " +
 			"The Cloak stays up after yield. action=release only when the job is done.",
 		parameters: {
@@ -254,7 +317,7 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				account: { type: "string", description: "Exact account label when site has account-scoped faces (bind)" },
 				scratch: { type: "boolean", description: "Bind an ephemeral anonymous scratch (bind)" },
 				url: { type: "string", description: "navigate / new_tab URL" },
-				path: { type: "string", description: "screenshot output path" },
+				path: { type: "string", description: "screenshot / peek output path" },
 				x: { type: "number", description: "click / scroll x" },
 				y: { type: "number", description: "click / scroll y" },
 				button: { type: "string", description: "click button (left|right|middle)" },
@@ -267,6 +330,8 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				timeout: { type: "number", description: "wait_for_load / wait_for_element timeout seconds" },
 				accept: { type: "boolean", description: "dialog accept (true) or dismiss (false)" },
 				prompt_text: { type: "string", description: "dialog prompt response" },
+				target_id: { type: "string", description: "switch_tab / close_tab destination (not your bound pin)" },
+				steal: { type: "boolean", description: "switch_tab: take mutating ownership of target_id" },
 			},
 		},
 		async execute(_id: string, params: CloakParams, _onUpdate: unknown, ctx: SessionCtx) {
@@ -321,6 +386,9 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				const msg = result.message || result.error || body;
 				const code = result.code ? `[${result.code}] ` : "";
 				return textResult(`${code}${msg}`, { isError: true, details: result });
+			}
+			if (action === "new_tab" || action === "switch_tab" || action === "close_tab") {
+				binder.storeState(ctx, applyTabResult(state, action, result));
 			}
 			return textResult(body, { details: result });
 		},

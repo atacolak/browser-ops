@@ -122,12 +122,44 @@ def test_build_drive_request_pins_target_and_maps_fill():
         const nav = buildDriveRequest("navigate", sidecar, { action: "navigate", url: "https://ex.test" });
         const fill = buildDriveRequest("fill", sidecar, { action: "fill", selector: "#q", text: "hi" });
         const ping = buildDriveRequest("ping", sidecar, { action: "ping" });
-        console.log(JSON.stringify({ nav, fill, ping }));
+        const sw = buildDriveRequest("switch_tab", sidecar, { action: "switch_tab", target_id: "OTHER", steal: true });
+        console.log(JSON.stringify({ nav, fill, ping, sw }));
         """
     )
-    assert out["nav"] == {"action": "navigate", "target_id": "TAB", "url": "https://ex.test"}
-    assert out["fill"] == {"action": "fill_input", "target_id": "TAB", "text": "hi", "selector": "#q"}
-    assert out["ping"] == {"action": "ping", "target_id": "TAB"}
+    extra = {"lease_id": "L1", "held_lease_ids": ["L1"]}
+    assert out["nav"] == {"action": "navigate", "target_id": "TAB", "url": "https://ex.test", **extra}
+    assert out["fill"] == {"action": "fill_input", "target_id": "TAB", "text": "hi", "selector": "#q", **extra}
+    assert out["ping"] == {"action": "ping", "target_id": "TAB", **extra}
+    assert out["sw"]["dest_target_id"] == "OTHER"
+    assert out["sw"]["steal"] is True
+    assert out["sw"]["target_id"] == "TAB"
+
+
+def test_apply_tab_result_rewrites_sidecar():
+    out = _run_bun(
+        """
+        import { applyTabResult } from "./omp/cloak.ts";
+        const sidecar = {
+          leaseId: "L1", targetId: "TAB", worker: "w", socket: "/s", cdp: "http://127.0.0.1:9", root: "/ops",
+          held: { TAB: "L1" },
+        };
+        const minted = applyTabResult(sidecar, "new_tab", { target_id: "NEW", lease_id: "L2", mode: "drive" });
+        const peek = applyTabResult(sidecar, "switch_tab", { target_id: "SIB", mode: "peek", ownership: "owned_by" });
+        const steal = applyTabResult(sidecar, "switch_tab", { target_id: "SIB", lease_id: "L3", mode: "steal" });
+        const closed = applyTabResult(minted, "close_tab", { closed: "NEW", released_lease: "L2" });
+        console.log(JSON.stringify({ minted, peek, steal, closed }));
+        """
+    )
+    assert out["minted"]["targetId"] == "NEW"
+    assert out["minted"]["leaseId"] == "L2"
+    assert out["minted"]["held"] == {"TAB": "L1", "NEW": "L2"}
+    assert out["peek"]["targetId"] == "TAB"
+    assert out["peek"]["leaseId"] == "L1"
+    assert out["steal"]["targetId"] == "SIB"
+    assert out["steal"]["leaseId"] == "L3"
+    assert out["closed"]["targetId"] == "TAB"
+    assert out["closed"]["leaseId"] == "L1"
+    assert "NEW" not in out["closed"]["held"]
 
 
 def test_drive_without_bind_errors_no_cdp():
@@ -200,7 +232,10 @@ def test_bind_then_navigate_sends_json_line(tmp_path: Path):
     out = _run_bun(script)
     t.join(2)
     assert out["isError"] is not True
-    assert received == [{"action": "navigate", "target_id": "TAB-9", "url": "https://ex.test"}]
+    assert received[0]["action"] == "navigate"
+    assert received[0]["target_id"] == "TAB-9"
+    assert received[0]["url"] == "https://ex.test"
+    assert received[0]["lease_id"] == "L1"
 
 
 def test_bind_reuses_alive_sidecar_without_launch(tmp_path: Path):
@@ -286,4 +321,5 @@ def test_bind_writes_sidecar_socket_worker_target(tmp_path: Path):
     assert sidecar["targetId"] == "TAB-new"
     assert sidecar["socket"] == "/ops/state/scratch-nav/daemon.sock"
     assert sidecar["cdp"] == "http://127.0.0.1:9444"
+    assert sidecar["held"] == {"TAB-new": "L2"}
 
