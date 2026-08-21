@@ -1,34 +1,29 @@
 /**
- * bind_profile — harness-owned browserctl bind for navigator subagents.
+ * Bind/release helpers for the cloak tool.
  *
- * Source of truth lives in this repo. ~/.omp/agent/tools/bind-profile.ts
- * should be a symlink here. Navigators must not shell out to browserctl.
- *
- * Attach is the upstream browser parameter: app.cdp_url from this tool's result.
- * The Cloak stays up across yields. release=true closes it now.
- * onSession(shutdown) reaps on real teardown (idle-TTL park, kill, process exit).
+ * Not a registered OMP tool. `omp/cloak.ts` is the only agent-facing name.
+ * Sidecar path stays `<session>.bind-profile.json` (contract).
  */
 import { existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type BindParams = {
+export type BindParams = {
 	profile?: string;
 	site?: string;
 	account?: string;
 	scratch?: boolean;
-	release?: boolean;
 };
 
-type ExecFn = (
+export type ExecFn = (
 	command: string,
 	args: string[],
 	options?: { timeout?: number; cwd?: string },
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-type SessionKey = object | string;
+export type SessionKey = object | string;
 
-type BindState = {
+export type BindState = {
 	leaseId: string;
 	browserLeaseId?: string;
 	targetId?: string;
@@ -36,9 +31,19 @@ type BindState = {
 	profile?: string;
 	root: string;
 	cdp: string;
+	worker: string;
+	socket: string;
 };
 
-type SessionCtx = { sessionManager?: { getSessionFile?: () => string | null } };
+export type SessionCtx = { sessionManager?: { getSessionFile?: () => string | null } };
+
+export type BindResult =
+	| { ok: true; reused: boolean; state: BindState; used: string }
+	| { ok: false; text: string };
+
+export type ReleaseResult = { ok: boolean; text: string };
+
+export type AliveCheck = (state: BindState) => Promise<boolean>;
 
 function walkForRoot(start: string): string | undefined {
 	let dir = start;
@@ -56,7 +61,7 @@ function walkForRoot(start: string): string | undefined {
 	return undefined;
 }
 
-function resolveOpsRoot(): string {
+export function resolveOpsRoot(): string {
 	const env = (process.env.BROWSER_OPS_ROOT || "").trim();
 	if (env) return env;
 	try {
@@ -70,21 +75,21 @@ function resolveOpsRoot(): string {
 	const fromCwd = walkForRoot(process.cwd());
 	if (fromCwd) return fromCwd;
 	throw new Error(
-		"browser-ops root not found. set BROWSER_OPS_ROOT or keep bind-profile.ts inside the checkout (symlink ok).",
+		"browser-ops root not found. set BROWSER_OPS_ROOT or keep cloak.ts inside the checkout (symlink ok).",
 	);
 }
 
-function sessionKey(ctx: SessionCtx): SessionKey {
+export function sessionKey(ctx: SessionCtx): SessionKey {
 	const file = ctx.sessionManager?.getSessionFile?.();
 	return file || ctx.sessionManager || "orphan";
 }
 
-function sidecarPath(ctx: SessionCtx): string | null {
+export function sidecarPath(ctx: SessionCtx): string | null {
 	const file = ctx.sessionManager?.getSessionFile?.();
 	return file ? `${file}.bind-profile.json` : null;
 }
 
-function readSidecar(ctx: SessionCtx): BindState | undefined {
+export function readSidecar(ctx: SessionCtx): BindState | undefined {
 	const path = sidecarPath(ctx);
 	if (!path || !existsSync(path)) return undefined;
 	try {
@@ -96,13 +101,13 @@ function readSidecar(ctx: SessionCtx): BindState | undefined {
 	return undefined;
 }
 
-function writeSidecar(ctx: SessionCtx, state: BindState): void {
+export function writeSidecar(ctx: SessionCtx, state: BindState): void {
 	const path = sidecarPath(ctx);
 	if (!path) return;
 	writeFileSync(path, JSON.stringify(state));
 }
 
-function clearSidecar(ctx: SessionCtx): void {
+export function clearSidecar(ctx: SessionCtx): void {
 	const path = sidecarPath(ctx);
 	if (!path || !existsSync(path)) return;
 	try {
@@ -112,7 +117,16 @@ function clearSidecar(ctx: SessionCtx): void {
 	}
 }
 
-async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {
+export function daemonSocketPath(root: string, worker: string): string {
+	return join(root, "state", worker, "daemon.sock");
+}
+
+export function sidecarComplete(state: BindState | undefined): state is BindState {
+	if (!state) return false;
+	return Boolean(state.leaseId && state.cdp && state.worker && state.socket && state.targetId);
+}
+
+export async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {
 	const raw = (cdp || "").trim();
 	if (!raw) return false;
 	let origin: string;
@@ -135,7 +149,7 @@ async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<bool
 	return r.code === 0;
 }
 
-async function runJson(
+export async function runJson(
 	exec: ExecFn,
 	argv: string[],
 	root: string,
@@ -154,7 +168,7 @@ async function runJson(
 	return { ok: r.code === 0 && data.ok !== false, raw, data };
 }
 
-async function cardsMarkdown(exec: ExecFn, root: string): Promise<string> {
+export async function cardsMarkdown(exec: ExecFn, root: string): Promise<string> {
 	const r = await runJson(exec, ["profiles", "cards"], root);
 	if (r.ok && typeof r.data.markdown === "string") return r.data.markdown;
 	if (r.ok && r.raw && !r.raw.startsWith("{")) return r.raw;
@@ -175,7 +189,56 @@ async function cardsMarkdown(exec: ExecFn, root: string): Promise<string> {
 		.join("\n\n");
 }
 
-export default function bindProfileTool(pi: { exec: ExecFn }) {
+function asRecord(v: unknown): Record<string, unknown> {
+	return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+}
+
+function asString(v: unknown): string {
+	return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+export function stateFromLaunch(
+	data: Record<string, unknown>,
+	root: string,
+	used: string,
+	scratch: boolean,
+): BindState | { error: string } {
+	const env = asRecord(data.env);
+	const lease = asRecord(data.lease);
+	const spawn = asRecord(data.spawn);
+	const browserLease = asRecord(data.browser_lease);
+	const resources = {
+		...asRecord(browserLease.resources),
+		...asRecord(lease.resources),
+	};
+	const leaseId = asString(env.BROWSERCTL_LEASE_ID || lease.lease_id);
+	const cdp = asString(env.BROWSER_CDP_URL || resources.cdp_url);
+	const worker = asString(
+		env.BROWSER_HARNESS_WORKER || lease.worker_id || spawn.worker_id || resources.worker_id,
+	);
+	const socket = asString(resources.socket) || (worker ? daemonSocketPath(root, worker) : "");
+	const targetId = asString(env.BROWSERCTL_TARGET_ID || lease.target_id || spawn.target_id);
+	if (!leaseId || !cdp || !worker || !socket || !targetId) {
+		return {
+			error:
+				`bind incomplete (${used}): lease=${leaseId || "missing"} worker=${worker || "missing"} ` +
+				`socket=${socket || "missing"} target=${targetId || "missing"} cdp=${cdp ? "set" : "missing"}.`,
+		};
+	}
+	return {
+		leaseId,
+		browserLeaseId: asString(env.BROWSERCTL_BROWSER_LEASE_ID || lease.browser_lease_id || spawn.browser_lease_id) || undefined,
+		targetId,
+		targetLeaseId: asString(env.BROWSERCTL_TARGET_LEASE_ID || leaseId) || undefined,
+		profile: asString(env.BROWSERCTL_PROFILE_NAME) || (scratch ? undefined : used),
+		root,
+		cdp,
+		worker,
+		socket,
+	};
+}
+
+export function createBinder(exec: ExecFn, opts?: { isAlive?: AliveCheck }) {
 	const binds = new Map<SessionKey, BindState>();
 
 	function loadState(ctx: SessionCtx): BindState | undefined {
@@ -183,15 +246,29 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 		return binds.get(key) ?? readSidecar(ctx);
 	}
 
-	async function releaseState(ctx: SessionCtx): Promise<{ ok: boolean; text: string }> {
-		const key = sessionKey(ctx);
+	function storeState(ctx: SessionCtx, state: BindState): void {
+		binds.set(sessionKey(ctx), state);
+		writeSidecar(ctx, state);
+	}
+
+	function dropState(ctx: SessionCtx): void {
+		binds.delete(sessionKey(ctx));
+		clearSidecar(ctx);
+	}
+
+	async function isAlive(state: BindState): Promise<boolean> {
+		if (!sidecarComplete(state)) return false;
+		if (opts?.isAlive) return opts.isAlive(state);
+		return cdpHttpAlive(exec, state.cdp);
+	}
+
+	async function releaseState(ctx: SessionCtx): Promise<ReleaseResult> {
 		const state = loadState(ctx);
 		if (!state) {
 			return { ok: true, text: "No bind to release." };
 		}
-		const released = await runJson(pi.exec, ["release", "--lease", state.leaseId], state.root);
-		binds.delete(key);
-		clearSidecar(ctx);
+		const released = await runJson(exec, ["release", "--lease", state.leaseId], state.root);
+		dropState(ctx);
 		if (!released.ok) {
 			return {
 				ok: false,
@@ -206,177 +283,83 @@ export default function bindProfileTool(pi: { exec: ExecFn }) {
 		};
 	}
 
-	return {
-		name: "bind_profile",
-		label: "Bind browser profile",
-		loadMode: "essential" as const,
-		description:
-			"Bind this navigator session to a browser-ops Cloak profile (or ephemeral scratch). " +
-			"Resolve by site, or name a registered profile, or scratch=true for anonymous. " +
-			"Then browser open with app.cdp_url set to the returned cdp_url. " +
-			"The browser stays up after yield for follow-ups. release=true only to close it now. " +
-			"Do not run browserctl yourself.",
-		parameters: {
-			type: "object",
-			properties: {
-				profile: { type: "string", description: "Registered profile name (optional)" },
-				site: { type: "string", description: "Site key to resolve, e.g. github.com" },
-				account: { type: "string", description: "Exact account label when site has account-scoped faces" },
-				scratch: { type: "boolean", description: "Bind an ephemeral anonymous scratch (wipe on cleanup)" },
-				release: { type: "boolean", description: "Close this job's Cloak now. Omit to keep it for follow-ups." },
-			},
-		},
-		async execute(_id: string, params: BindParams, _onUpdate: unknown, ctx: SessionCtx) {
-			if (params.release) {
-				const out = await releaseState(ctx);
-				return { content: [{ type: "text" as const, text: out.text }] };
-			}
+	async function bind(ctx: SessionCtx, params: BindParams): Promise<BindResult> {
+		let root: string;
+		try {
+			root = resolveOpsRoot();
+		} catch (e) {
+			return { ok: false, text: e instanceof Error ? e.message : String(e) };
+		}
 
-			let root: string;
-			try {
-				root = resolveOpsRoot();
-			} catch (e) {
-				return {
-					content: [{ type: "text" as const, text: e instanceof Error ? e.message : String(e) }],
-				};
+		const existing = loadState(ctx);
+		if (existing) {
+			if (await isAlive(existing)) {
+				storeState(ctx, existing);
+				return { ok: true, reused: true, state: existing, used: existing.profile || "(scratch)" };
 			}
-			const key = sessionKey(ctx);
-			const existing = loadState(ctx);
-			if (existing) {
-				if (!(await cdpHttpAlive(pi.exec, existing.cdp))) {
-					binds.delete(key);
-					clearSidecar(ctx);
-				} else {
-					binds.set(key, existing);
+			dropState(ctx);
+		}
+
+		const argv: string[] = ["launch", "--owner", "omp-nav"];
+		let used = "scratch";
+
+		if (params.scratch) {
+			argv.push("--mode", "one_shot", "--kind", "scratch", "--label", "nav-ephemeral");
+			used = "scratch (ephemeral)";
+		} else if (params.profile?.trim()) {
+			argv.push("--mode", "persistent", "--profile", params.profile.trim());
+			used = params.profile.trim();
+		} else if (params.site?.trim()) {
+			const resolved = await runJson(
+				exec,
+				["profiles", "resolve", params.site.trim(), ...(params.account ? ["--account", params.account] : [])],
+				root,
+			);
+			if (!resolved.ok) {
+				const code = (resolved.data.error as { code?: string } | undefined)?.code || "RESOLVE_FAILED";
+				if (code === "PROFILE_AMBIGUOUS") {
 					return {
-						content: [
-							{
-								type: "text" as const,
-								text:
-									`Already bound lease=${existing.leaseId} profile=${existing.profile || "(scratch)"} ` +
-									`cdp_url=${existing.cdp}` +
-									(existing.targetId ? ` target=${existing.targetId}` : "") +
-									`. Open with app.cdp_url=${existing.cdp}` +
-									(existing.targetId ? ` app.target_id=${existing.targetId}` : "") +
-									`. Attach only to the leased target. release=true drops this target, not sibling navigators.`,
-							},
-						],
+						ok: false,
+						text: `Ambiguous site=${params.site}: pass account=. ${resolved.raw.slice(0, 800)}`,
 					};
 				}
-			}
-			const argv: string[] = ["launch", "--owner", "omp-nav"];
-			let used = "scratch";
-
-			if (params.scratch) {
-				argv.push("--mode", "one_shot", "--kind", "scratch", "--label", "nav-ephemeral");
-				used = "scratch (ephemeral)";
-			} else if (params.profile?.trim()) {
-				argv.push("--mode", "persistent", "--profile", params.profile.trim());
-				used = params.profile.trim();
-			} else if (params.site?.trim()) {
-				const resolved = await runJson(
-					pi.exec,
-					["profiles", "resolve", params.site.trim(), ...(params.account ? ["--account", params.account] : [])],
-					root,
-				);
-				if (!resolved.ok) {
-					const code = (resolved.data.error as { code?: string } | undefined)?.code || "RESOLVE_FAILED";
-					if (code === "PROFILE_AMBIGUOUS") {
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: `Ambiguous site=${params.site}: pass account=. ${resolved.raw.slice(0, 800)}`,
-								},
-							],
-						};
-					}
-					if (code === "PROFILE_NOT_FOUND") {
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text:
-										`No named profile for site=${params.site}. ` +
-										`Call bind_profile with scratch=true for a public page, ` +
-										`or yield propose_profile / propose_associate if login is required. ` +
-										resolved.raw.slice(0, 600),
-								},
-							],
-						};
-					}
-					return { content: [{ type: "text" as const, text: `resolve failed: ${resolved.raw.slice(0, 800)}` }] };
-				}
-				const name = String(resolved.data.name || "");
-				if (!name) {
-					return { content: [{ type: "text" as const, text: `resolve returned no name: ${resolved.raw.slice(0, 400)}` }] };
-				}
-				argv.push("--mode", "persistent", "--profile", name);
-				used = name;
-			} else {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: "Need profile=, site=, scratch=true, or release=true.\n\nRegistry:\n" + (await cardsMarkdown(pi.exec, root)),
-						},
-					],
-				};
-			}
-
-			const launched = await runJson(pi.exec, argv, root);
-			if (!launched.ok) {
-				return {
-					content: [{ type: "text" as const, text: `bind failed (${used}): ${launched.raw.slice(0, 1200)}` }],
-				};
-			}
-			const env = (launched.data.env as Record<string, string>) || {};
-			const lease = (launched.data.lease as Record<string, unknown>) || {};
-			const leaseId = String(env.BROWSERCTL_LEASE_ID || lease.lease_id || "");
-			const cdp = String(env.BROWSER_CDP_URL || "");
-			if (!leaseId || !cdp) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `bind incomplete (${used}): lease=${leaseId || "missing"} cdp_url=${cdp || "missing"}. ${launched.raw.slice(0, 600)}`,
-						},
-					],
-				};
-			}
-
-			const state: BindState = {
-				leaseId,
-				browserLeaseId: String(env.BROWSERCTL_BROWSER_LEASE_ID || lease.browser_lease_id || ""),
-				targetId: String(env.BROWSERCTL_TARGET_ID || lease.target_id || ""),
-				targetLeaseId: String(env.BROWSERCTL_TARGET_LEASE_ID || leaseId),
-				profile: env.BROWSERCTL_PROFILE_NAME || (params.scratch ? undefined : used),
-				root,
-				cdp,
-			};
-			binds.set(key, state);
-			writeSidecar(ctx, state);
-
-			return {
-				content: [
-					{
-						type: "text" as const,
+				if (code === "PROFILE_NOT_FOUND") {
+					return {
+						ok: false,
 						text:
-							`Bound ${used}. lease=${leaseId}` +
-							(state.targetId ? ` target=${state.targetId}` : "") +
-							(state.browserLeaseId ? ` browser_lease=${state.browserLeaseId}` : "") +
-							` cdp_url=${cdp}. ` +
-							`Next: browser open with app.cdp_url=${cdp}` +
-							(state.targetId ? ` app.target_id=${state.targetId}` : "") +
-							` (no app.path, no app.relay). Attach only to the leased target; never the first/visible tab. ` +
-							`Same profile may host other navigators on other targets. release=true drops this target only.`,
-					},
-				],
+							`No named profile for site=${params.site}. ` +
+							`Call cloak action=bind with scratch=true for a public page, ` +
+							`or yield propose_profile / propose_associate if login is required. ` +
+							resolved.raw.slice(0, 600),
+					};
+				}
+				return { ok: false, text: `resolve failed: ${resolved.raw.slice(0, 800)}` };
+			}
+			const name = String(resolved.data.name || "");
+			if (!name) {
+				return { ok: false, text: `resolve returned no name: ${resolved.raw.slice(0, 400)}` };
+			}
+			argv.push("--mode", "persistent", "--profile", name);
+			used = name;
+		} else {
+			return {
+				ok: false,
+				text: "Need action=bind with profile=, site=, or scratch=true (or action=release).\n\nRegistry:\n" +
+					(await cardsMarkdown(exec, root)),
 			};
-		},
-		async onSession(event: { reason: string }, ctx: SessionCtx) {
-			if (event.reason !== "shutdown") return;
-			await releaseState(ctx);
-		},
-	};
+		}
+
+		const launched = await runJson(exec, argv, root);
+		if (!launched.ok) {
+			return { ok: false, text: `bind failed (${used}): ${launched.raw.slice(0, 1200)}` };
+		}
+		const built = stateFromLaunch(launched.data, root, used, Boolean(params.scratch));
+		if ("error" in built) {
+			return { ok: false, text: `${built.error} ${launched.raw.slice(0, 600)}` };
+		}
+		storeState(ctx, built);
+		return { ok: true, reused: false, state: built, used };
+	}
+
+	return { loadState, storeState, dropState, releaseState, bind };
 }

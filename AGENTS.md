@@ -12,7 +12,7 @@ Cloak lease plane: session leases + named profile registry + CDP daemon.
 |---|---|
 | `bin/browserctl` | leases + named profile lookup |
 | `browserctl/` | manager, scratch/vpn adapters, `profiles.py` |
-| `omp/bind-profile.ts` | OMP navigator bind (symlink to `~/.omp/agent/tools/`) |
+| `omp/cloak.ts` | OMP navigator `cloak` tool (symlink to `~/.omp/agent/tools/`) |
 | `daemon/` | CDP harness + active-target publish |
 | `vpn/` | geo SOCKS egress helpers |
 | `skills/domains/<site>/` | learned site procedures |
@@ -28,11 +28,13 @@ Human entry: [`README.md`](./README.md) · CLI: [`docs/browserctl.md`](./docs/br
 
 | Actor | Owns | Must not |
 |---|---|---|
-| **navigator** | page ops on an already-bound `cdp_url` | shell `browserctl`; allocate ports/profiles |
+| **navigator** | page ops via `cloak` on a leased target | shell `browserctl`; allocate ports/profiles; `xd://browser` |
 | orchestrator / human | `launch` / `release` / profile register+associate | driving pages; raw daemon ports |
 | demiurge | code/config in this repo | browser mutation |
 
-**Rule:** only navigator has browser tools. Bind once with `bind_profile`, then `browser` open `app.cdp_url` **and** `app.target_id` (the leased target). Never adopt the first/visible tab on a shared browser.
+**Rule:** only navigator has `cloak`. Bind once with `cloak action=bind`, then drive with `cloak action=navigate|click|…`. Never attach `xd://browser` / puppeteer to a CDP port. Never adopt the first/visible tab on a shared browser.
+
+Navigators do **not** invent herdr panes, i3 windows, or viewer daemons. Headed chrome is the profile's launch flag. The pane view is orchestrator work until bind auto-opens a plugin pane (not wired).
 
 ---
 
@@ -85,7 +87,7 @@ cdp=$(jq -r .env.BROWSER_CDP_URL <<<"$out")
 ### Lease laws
 
 1. **One browser/process lease per worker.** Many target leases may share that browser. At most one mutating owner per target.
-2. Duplicate **browser** acquire with exclusive intent → `LEASE_CONFLICT`. Claiming an owned target → `TARGET_CONFLICT`. A second `bind_profile` / acquire on the same named profile joins and mints a new target.
+2. Duplicate **browser** acquire with exclusive intent → `LEASE_CONFLICT`. Claiming an owned target → `TARGET_CONFLICT`. A second `cloak bind` / acquire on the same named profile joins and mints a new target.
 3. **No managed `default`** for leased work.
 4. Control plane is atomic files under `state/control/` (no secrets).
 5. Harness publishes `state/<worker>/control/active-target.json` (foreground projection). Ownership lives in `targets.json`.
@@ -97,6 +99,31 @@ browser worker / named profile
 └── target lease → navigator b
 ```
 
+### Spawn loop (headed / headless / one vs many)
+
+```text
+named profile  →  1 worker / 1 process / 1 CDP
+               →  N target leases (1 mutating owner each)
+headed flag    →  visible cloak window (PROFILES.json launch.headed)
+                 NOT a herdr pane, NOT automatic
+headless       →  same leases, no desktop window, no pane
+```
+
+| Shape | How | Who |
+|---|---|---|
+| 1 profile, 1 navigator | `cloak bind` named or scratch. one target. | navigator binds; orchestrator only if a pane view is wanted |
+| 1 profile, N navigators | each `cloak bind` **joins** the worker, mints a new target. unique leased `targetId` per sidecar | same |
+| 1 profile, 1 worker, headed | `launch.headed: true` on the named face. do **not** pass `--headed` with `--profile` | register the face once |
+| 1 profile, 1 worker, headless | omit `headed` (default). same bind/join | register or scratch |
+| ephemeral scratch | `cloak bind` scratch=true → unique worker, `one_shot` | public pages; wipe if `ephemeral_wipe_v1` |
+| persist across yield | hcom named session (`hcom omp --tag …`). in-process `task` navigators die after yield | orchestrator |
+
+Headed **does not** auto-attach a herdr `interactive_mirror` beside the agent. herdr-browser can `plugin pane open` (`placement: split`) but `cloak` does not call it. until that hook exists, the orchestrator splits 33/67, pins a **per-target overlay**, isolates `HERDR_BROWSER_DAEMON_STATE`, `follow-pane`.
+
+hcom `COLLISION … both edited xd://browser` is a **path lock**, not `LEASE_CONFLICT` / `TARGET_CONFLICT`. ignore when the two `BROWSERCTL_TARGET_ID`s differ.
+
+Subagents (omp `task` navigator, hcom peer): same `cloak bind` then `cloak` drive path. they do not get a free pane. persist ≠ pane.
+
 ---
 
 ## Memory / skills
@@ -104,8 +131,9 @@ browser worker / named profile
 | Kind | Where |
 |---|---|
 | Domain procedure | `skills/domains/<domain>/<skill>.md` |
-| Interaction patterns | `skills/interactions/*.md` |
+| Interaction patterns | `skills/interactions/*.md` (herdr mirror recipe: `concurrent-targets.md`) |
 | Named profiles | `profiles/PROFILES.json` via `browserctl profiles …` |
+| Spawn / lease law | **this file** — not a skill |
 
 ---
 
@@ -116,4 +144,4 @@ browser worker / named profile
 - Always `release` when the job is done; `one_shot` + reap is the crash backstop
 - CDP on localhost only
 - Do not auto-associate profiles from URLs
-- Navigators: `bind_profile` only — never shell `browserctl`
+- Navigators: `cloak` only — never shell `browserctl`, never `xd://browser`
