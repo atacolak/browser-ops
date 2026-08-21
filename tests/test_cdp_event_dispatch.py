@@ -193,6 +193,45 @@ def test_cdp_error_reply_raises_instead_of_keyerror():
     asyncio.run(_run())
 
 
+def test_generic_cdp_failed_does_not_retarget():
+    """pin_target recovers only on missing-target, not every 'failed' CDP error."""
+    from backend.cloak import CloakBackend
+
+    async def _run():
+        b = CloakBackend("w", profile_dir="/tmp/x", cdp_port=9)
+        b.session_id = "S"
+        b.target_id = "TA"
+        created = []
+
+        async def boom(tid):
+            raise RuntimeError("CDP Page.navigate failed: inspector is already attached")
+
+        async def mint(url="about:blank"):
+            created.append(url)
+            return {"target_id": "TNEW", "session_id": "SN"}
+
+        b.switch_tab = boom  # type: ignore[method-assign]
+        b.new_tab = mint  # type: ignore[method-assign]
+        try:
+            await b.pin_target("TA")
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as e:
+            assert "inspector is already attached" in str(e)
+        assert created == []
+        assert b.target_id == "TA"
+
+        async def missing(tid):
+            raise RuntimeError("CDP Target.activateTarget failed: No target with given id found")
+
+        b.switch_tab = missing  # type: ignore[method-assign]
+        out = await b.pin_target("DEAD")
+        assert out.get("retargeted") is True
+        assert out["target_id"] == "TNEW"
+        assert created == ["about:blank"]
+
+    asyncio.run(_run())
+
+
 def test_sync_handler_supported():
     async def _run():
         cdp = CDPClient("ws://127.0.0.1:9/devtools/browser", event_queue_size=8)

@@ -564,6 +564,7 @@ async def _pin_session(backend: BrowserBackend, action: str, cmd: dict) -> None:
             new_tid = str(pinned.get("target_id") or "")
             if new_tid:
                 retarget_live_lease(backend, cmd, new_tid)
+                cmd["_retargeted"] = True
         return
     switch = getattr(backend, "switch_tab", None)
     if callable(switch):
@@ -590,8 +591,10 @@ async def _execute_action(backend: BrowserBackend, action: str, cmd: dict) -> di
             return await handle_switch_tab(backend, cmd)
         if action == "close_tab":
             return await handle_close_tab(backend, cmd)
-        await _pin_session(backend, action, cmd)
         await gate_mutate(backend, action, cmd)
+        await _pin_session(backend, action, cmd)
+        if cmd.get("_retargeted"):
+            await gate_mutate(backend, action, cmd)
         return await _execute_action_unlocked(backend, action, cmd)
 
 

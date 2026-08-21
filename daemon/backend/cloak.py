@@ -649,8 +649,7 @@ class CloakBackend(BrowserBackend):
         try:
             return await self.switch_tab(target_id)
         except RuntimeError as e:
-            text = str(e)
-            if "No target with given id" not in text and "failed" not in text.lower():
+            if "No target with given id" not in str(e):
                 raise
             minted = await self.new_tab("about:blank")
             minted = dict(minted)

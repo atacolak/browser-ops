@@ -171,6 +171,8 @@ class RecordingTabs:
         return {"navigated": url, "target_id": self.target_id}
 
     async def pin_target(self, target_id: str) -> dict:
+        self.activated.append(target_id)
+        self.switched.append(target_id)
         self.target_id = target_id
         return {"target_id": target_id}
 
@@ -301,6 +303,39 @@ def test_navigate_on_sibling_target_is_conflict(ctx):
             )
         )
     assert ei.value.code == "TARGET_CONFLICT"
+    assert backend.activated == []
+    assert backend.switched == []
+    assert backend.target_id == "TA"
+    still = classify_target(state, "scratch-profile-providers", "TA", caller_lease_id=a["lease"]["lease_id"])
+    assert still["ownership"] == "owned_by_me"
+
+
+def test_navigate_bogus_target_does_not_retarget_live_lease(ctx):
+    from browserctl.store import load_lease
+
+    m, _fake, state = ctx
+    a = m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TA"})
+    backend = RecordingTabs(state)
+    with pytest.raises(DaemonError) as ei:
+        _run(
+            _execute_action(
+                backend,
+                "navigate",
+                {
+                    "url": "https://evil.example",
+                    "target_id": "NOPE",
+                    "lease_id": a["lease"]["lease_id"],
+                },
+            )
+        )
+    assert ei.value.code == "TARGET_CONFLICT"
+    assert backend.activated == []
+    assert backend.created == []
+    row = load_lease(state, a["lease"]["lease_id"])
+    assert row is not None
+    assert row["target_id"] == "TA"
+    still = classify_target(state, "scratch-profile-providers", "TA", caller_lease_id=a["lease"]["lease_id"])
+    assert still["ownership"] == "owned_by_me"
 
 
 def test_mutate_without_lease_id_is_required(ctx):
