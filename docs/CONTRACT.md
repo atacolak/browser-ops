@@ -60,7 +60,7 @@ Ownership is by **lease id**. A lease id is a mutation capability for exactly on
 }
 ```
 
-`cdp` is for humans and doctor tools, not a second driver. `held` is cloak-local: every tab this client currently owns. `release` drops all of them. Stale bind and `TARGET_LEASE_REQUIRED` best-effort release every held lease, then drop the sidecar — leftover tabs are not orphaned. The daemon never trusts a client-asserted held set.
+`cdp` is for humans and doctor tools, not a second driver. `held` is cloak-local: every tab this client currently owns. `release` drops all of them. Before each drive (including `tabs`), cloak verifies every held lease and drops the dead mappings, then remints `owned_by_me`. Stale bind and `TARGET_LEASE_REQUIRED` best-effort release every remaining held lease, then drop the sidecar. The daemon never trusts a client-asserted held set.
 
 ## `cloak` actions
 
@@ -102,3 +102,4 @@ Tracked instead: `profiles/PROFILES.example.json`, `profiles/BINDING.md`, tests,
 7. mutate without `lease_id` → `TARGET_LEASE_REQUIRED`; `--unmanaged` still pins under the drive lock
 8. `expiring` occupies the tab but cannot click; asserting extra `held_lease_ids` does not confer `owned_by_me`
 9. stale bind / `TARGET_LEASE_REQUIRED` releases every held lease before dropping the sidecar
+10. steal of a sibling tab: `tabs` reports it `owned_by`, drops it from `held`, current tab stays usable

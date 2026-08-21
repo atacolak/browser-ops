@@ -128,16 +128,48 @@ export function sidecarComplete(state: BindState | undefined): state is BindStat
 	return Boolean(state.leaseId && state.cdp && state.worker && state.socket && state.targetId);
 }
 
-export async function targetLeaseStillHeld(exec: ExecFn, state: BindState): Promise<boolean> {
-	if (!state.leaseId || !state.targetId) return false;
-	const st = await runJson(exec, ["status", "--lease", state.leaseId], state.root);
+export async function leaseStillHeld(
+	exec: ExecFn,
+	root: string,
+	leaseId: string | undefined,
+	targetId: string | undefined,
+): Promise<boolean> {
+	if (!leaseId || !targetId) return false;
+	const st = await runJson(exec, ["status", "--lease", leaseId], root);
 	if (!st.ok) return false;
 	const status = asString(st.data.status);
 	if (status !== "active") return false;
 	const scope = asString(st.data.scope);
 	if (scope && scope !== "target") return false;
 	const tid = asString(st.data.target_id);
-	return !tid || tid === state.targetId;
+	return !tid || tid === targetId;
+}
+
+export async function targetLeaseStillHeld(exec: ExecFn, state: BindState): Promise<boolean> {
+	return leaseStillHeld(exec, state.root, state.leaseId, state.targetId);
+}
+
+export async function pruneHeldLeases(exec: ExecFn, state: BindState): Promise<BindState> {
+	const held: Record<string, string> = {};
+	if (state.held && Object.keys(state.held).length) {
+		Object.assign(held, state.held);
+	} else if (state.targetId && state.leaseId) {
+		held[state.targetId] = state.leaseId;
+	}
+	const next: Record<string, string> = {};
+	for (const [tid, lid] of Object.entries(held)) {
+		if (await leaseStillHeld(exec, state.root, lid, tid)) next[tid] = lid;
+	}
+	if (state.targetId && next[state.targetId]) {
+		const leaseId = next[state.targetId];
+		return { ...state, leaseId, targetLeaseId: leaseId, held: next };
+	}
+	const first = Object.keys(next)[0];
+	if (first) {
+		const leaseId = next[first];
+		return { ...state, targetId: first, leaseId, targetLeaseId: leaseId, held: next };
+	}
+	return { ...state, targetId: undefined, leaseId: "", targetLeaseId: undefined, held: {} };
 }
 
 export async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {

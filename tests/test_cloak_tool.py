@@ -226,7 +226,13 @@ def test_bind_then_navigate_sends_json_line(tmp_path: Path):
 
     script = f"""
         import cloakTool from "./omp/cloak.ts";
-        const tool = cloakTool({{ exec: async () => ({{ stdout: "", stderr: "", code: 0 }}) }});
+        const exec = async (_cmd, args) => {{
+          if (args[0] === "status") {{
+            return {{ stdout: JSON.stringify({{ ok: true, status: "active", scope: "target", target_id: "TAB-9" }}), stderr: "", code: 0 }};
+          }}
+          return {{ stdout: "", stderr: "unexpected", code: 1 }};
+        }};
+        const tool = cloakTool({{ exec }});
         const ctx = {{ sessionManager: {{ getSessionFile: () => {json.dumps(str(session))} }} }};
         const result = await tool.execute("id", {{ action: "navigate", url: "https://ex.test" }}, undefined, ctx);
         console.log(JSON.stringify({{ text: result.content[0].text, isError: !!result.isError, details: result.details }}));
@@ -391,6 +397,98 @@ def test_remint_tabs_ownership_from_sidecar_map():
     )
     by_id = {t["targetId"]: t["ownership"] for t in out["tabs"]}
     assert by_id == {"TAB": "owned_by_me", "NEW": "owned_by_me", "SIB": "owned_by"}
+
+
+def test_prune_drops_stolen_sibling_and_keeps_current(tmp_path: Path):
+    sock_path = tmp_path / "daemon.sock"
+    received: list[dict] = []
+    ready = threading.Event()
+
+    def server():
+        if sock_path.exists():
+            sock_path.unlink()
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock_path))
+        srv.listen(1)
+        ready.set()
+        conn, _ = srv.accept()
+        with conn:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            line = buf.split(b"\n", 1)[0]
+            received.append(json.loads(line.decode()))
+            conn.sendall(
+                b'{"tabs":[{"targetId":"A","ownership":"owned_by_me"},{"targetId":"B","ownership":"owned_by"}]}\n'
+            )
+        srv.close()
+
+    t = threading.Thread(target=server, daemon=True)
+    t.start()
+    assert ready.wait(2)
+
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    sidecar = Path(str(session) + ".bind-profile.json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                "leaseId": "LA",
+                "targetId": "A",
+                "worker": "scratch-demo",
+                "socket": str(sock_path),
+                "cdp": "http://127.0.0.1:9333",
+                "root": str(ROOT),
+                "held": {"A": "LA", "B": "LB"},
+            }
+        )
+    )
+    script = f"""
+        import cloakTool from "./omp/cloak.ts";
+        import {{ pruneHeldLeases, readSidecar }} from "./omp/bind-profile.ts";
+        const exec = async (_cmd, args) => {{
+          if (args[0] === "status") {{
+            const i = args.indexOf("--lease");
+            const lid = args[i + 1];
+            if (lid === "LA") {{
+              return {{ stdout: JSON.stringify({{ ok: true, status: "active", scope: "target", target_id: "A" }}), stderr: "", code: 0 }};
+            }}
+            return {{ stdout: JSON.stringify({{ ok: false, error: {{ code: "LEASE_NOT_FOUND" }} }}), stderr: "", code: 2 }};
+          }}
+          return {{ stdout: "", stderr: "unexpected", code: 1 }};
+        }};
+        const pruned = await pruneHeldLeases(exec, {{
+          leaseId: "LA", targetId: "A", worker: "scratch-demo", socket: {json.dumps(str(sock_path))},
+          cdp: "http://127.0.0.1:9333", root: {json.dumps(str(ROOT))}, held: {{ A: "LA", B: "LB" }},
+        }});
+        const tool = cloakTool({{ exec }});
+        const ctx = {{ sessionManager: {{ getSessionFile: () => {json.dumps(str(session))} }} }};
+        const result = await tool.execute("id", {{ action: "tabs" }}, undefined, ctx);
+        const sc = readSidecar(ctx);
+        const body = JSON.parse(result.content[0].text);
+        console.log(JSON.stringify({{
+          prunedHeld: pruned.held, prunedTarget: pruned.targetId, prunedLease: pruned.leaseId,
+          isError: !!result.isError, byId: Object.fromEntries(body.tabs.map(t => [t.targetId, t.ownership])),
+          sidecarHeld: sc?.held, sidecarTarget: sc?.targetId, sidecarLease: sc?.leaseId,
+        }}));
+    """
+    out = _run_bun(script)
+    t.join(2)
+    assert out["isError"] is not True
+    assert out["prunedHeld"] == {"A": "LA"}
+    assert out["prunedTarget"] == "A"
+    assert out["prunedLease"] == "LA"
+    assert out["byId"] == {"A": "owned_by_me", "B": "owned_by"}
+    assert out["sidecarHeld"] == {"A": "LA"}
+    assert out["sidecarTarget"] == "A"
+    assert out["sidecarLease"] == "LA"
+    assert "B" not in out["sidecarHeld"]
+    assert received[0]["action"] == "tabs"
+    assert received[0]["lease_id"] == "LA"
+    assert "held_lease_ids" not in received[0]
 
 
 def test_bind_does_not_reuse_revoked_target_lease(tmp_path: Path):
@@ -572,6 +670,11 @@ def test_target_lease_required_releases_every_held_lease(tmp_path: Path):
         import {{ readSidecar }} from "./omp/bind-profile.ts";
         const released = [];
         const exec = async (_cmd, args) => {{
+          if (args[0] === "status") {{
+            const i = args.indexOf("--lease");
+            const lid = args[i + 1];
+            return {{ stdout: JSON.stringify({{ ok: true, status: "active", scope: "target", target_id: lid === "LA" ? "A" : "B" }}), stderr: "", code: 0 }};
+          }}
           if (args[0] === "release") {{
             const i = args.indexOf("--lease");
             released.push(args[i + 1]);

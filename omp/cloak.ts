@@ -13,6 +13,7 @@ import * as net from "node:net";
 import {
 	cdpHttpAlive,
 	createBinder,
+	pruneHeldLeases,
 	sidecarComplete,
 	type BindState,
 	type ExecFn,
@@ -404,13 +405,24 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				return textResult(`unknown cloak action=${action}`, { isError: true });
 			}
 
-			const state = binder.loadState(ctx);
+			let state = binder.loadState(ctx);
 			if (!sidecarComplete(state)) {
 				return textResult(
 					"cloak act without bind: no sidecar (lease/worker/socket/target). Call action=bind first. Do not connect to CDP.",
 					{ isError: true },
 				);
 			}
+
+			const pruned = await pruneHeldLeases(pi.exec, state);
+			if (!sidecarComplete(pruned)) {
+				binder.dropState(ctx);
+				return textResult(
+					"cloak act without bind: no live target lease left. Call action=bind first. Do not connect to CDP.",
+					{ isError: true },
+				);
+			}
+			state = pruned;
+			binder.storeState(ctx, state);
 
 			const req = buildDriveRequest(action, state, params);
 			let result: DaemonResponse;
@@ -433,9 +445,10 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				return textResult(`${code}${msg}`, { isError: true, details: visible });
 			}
 			if (action === "new_tab" || action === "switch_tab" || action === "close_tab") {
-				binder.storeState(ctx, applyTabResult(state, action, result));
+				state = applyTabResult(state, action, result);
+				binder.storeState(ctx, state);
 			}
-			const shown = action === "tabs" ? remintTabsOwnership(visible, state) : visible;
+			const shown = action === "tabs" ? redactForModel(remintTabsOwnership(result, state)) as DaemonResponse : visible;
 			return textResult(JSON.stringify(shown), { details: shown });
 		},
 		async onSession(event: { reason: string }, ctx: SessionCtx) {
