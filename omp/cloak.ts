@@ -415,9 +415,10 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 
 			const pruned = await pruneHeldLeases(pi.exec, state);
 			if (!sidecarComplete(pruned)) {
-				binder.dropState(ctx);
+				binder.storeState(ctx, pruned);
+				await binder.discardState(ctx);
 				return textResult(
-					"cloak act without bind: no live target lease left. Call action=bind first. Do not connect to CDP.",
+					"cloak act without bind: current target lease is gone. Call action=bind first. Do not connect to CDP.",
 					{ isError: true },
 				);
 			}

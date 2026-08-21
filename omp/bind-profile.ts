@@ -164,12 +164,7 @@ export async function pruneHeldLeases(exec: ExecFn, state: BindState): Promise<B
 		const leaseId = next[state.targetId];
 		return { ...state, leaseId, targetLeaseId: leaseId, held: next };
 	}
-	const first = Object.keys(next)[0];
-	if (first) {
-		const leaseId = next[first];
-		return { ...state, targetId: first, leaseId, targetLeaseId: leaseId, held: next };
-	}
-	return { ...state, targetId: undefined, leaseId: "", targetLeaseId: undefined, held: {} };
+	return { ...state, targetId: undefined, leaseId: "", targetLeaseId: undefined, held: next };
 }
 
 export async function cdpHttpAlive(exec: ExecFn, cdp: string | undefined): Promise<boolean> {

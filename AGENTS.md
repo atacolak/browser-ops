@@ -91,7 +91,7 @@ cdp=$(jq -r .env.BROWSER_CDP_URL <<<"$out")
 4. Control plane is atomic files under `state/control/` (no secrets).
 5. Harness publishes `state/<worker>/control/active-target.json` (foreground projection). Ownership lives in `targets.json`.
 6. Scheduled `browserctl reap` is a **crash backstop** for `one_shot`, `expiring`, or explicit `auto_reap`. Stale tab leases can be reaped without killing a persistent browser that still has other tabs.
-7. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling **peeks**. Socket `steal` is `STEAL_FORBIDDEN`. Mutate without an **active** target `lease_id` is `TARGET_LEASE_REQUIRED`. One request, one capability — the daemon does not take a held set. `expiring` occupies; it does not authorize. Before each drive, cloak prunes dead held mappings. Stale bind / `TARGET_LEASE_REQUIRED` best-effort releases every remaining held lease, then drops the sidecar.
+7. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling **peeks**. Socket `steal` is `STEAL_FORBIDDEN`. Mutate without an **active** target `lease_id` is `TARGET_LEASE_REQUIRED`. One request, one capability — the daemon does not take a held set. `expiring` occupies; it does not authorize. Before each drive, cloak prunes dead sibling mappings. If the current target dies, remaining held leases are released and the sidecar drops — no implicit promotion. Stale bind / `TARGET_LEASE_REQUIRED` do the same.
 
 ```text
 browser worker / named profile

@@ -491,6 +491,97 @@ def test_prune_drops_stolen_sibling_and_keeps_current(tmp_path: Path):
     assert "held_lease_ids" not in received[0]
 
 
+def test_prune_does_not_promote_sibling_when_current_stolen(tmp_path: Path):
+    sock_path = tmp_path / "daemon.sock"
+    received: list[dict] = []
+    if sock_path.exists():
+        sock_path.unlink()
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(sock_path))
+    srv.listen(1)
+    srv.settimeout(0.4)
+
+    def server():
+        try:
+            conn, _ = srv.accept()
+        except TimeoutError:
+            return
+        with conn:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            if buf:
+                received.append(json.loads(buf.split(b"\n", 1)[0].decode()))
+                conn.sendall(b'{"ok":true,"url":"https://mutated.example"}\n')
+        srv.close()
+
+    t = threading.Thread(target=server, daemon=True)
+    t.start()
+
+    session = tmp_path / "session.jsonl"
+    session.write_text("")
+    sidecar = Path(str(session) + ".bind-profile.json")
+    sidecar.write_text(
+        json.dumps(
+            {
+                "leaseId": "LA",
+                "targetId": "A",
+                "worker": "scratch-demo",
+                "socket": str(sock_path),
+                "cdp": "http://127.0.0.1:9333",
+                "root": str(ROOT),
+                "held": {"A": "LA", "B": "LB"},
+            }
+        )
+    )
+    script = f"""
+        import cloakTool from "./omp/cloak.ts";
+        import {{ pruneHeldLeases, readSidecar }} from "./omp/bind-profile.ts";
+        const released = [];
+        const exec = async (_cmd, args) => {{
+          if (args[0] === "status") {{
+            const i = args.indexOf("--lease");
+            const lid = args[i + 1];
+            if (lid === "LB") {{
+              return {{ stdout: JSON.stringify({{ ok: true, status: "active", scope: "target", target_id: "B" }}), stderr: "", code: 0 }};
+            }}
+            return {{ stdout: JSON.stringify({{ ok: false, error: {{ code: "LEASE_NOT_FOUND" }} }}), stderr: "", code: 2 }};
+          }}
+          if (args[0] === "release") {{
+            const i = args.indexOf("--lease");
+            released.push(args[i + 1]);
+            return {{ stdout: JSON.stringify({{ ok: true }}), stderr: "", code: 0 }};
+          }}
+          return {{ stdout: "", stderr: "unexpected", code: 1 }};
+        }};
+        const pruned = await pruneHeldLeases(exec, {{
+          leaseId: "LA", targetId: "A", worker: "scratch-demo", socket: {json.dumps(str(sock_path))},
+          cdp: "http://127.0.0.1:9333", root: {json.dumps(str(ROOT))}, held: {{ A: "LA", B: "LB" }},
+        }});
+        const tool = cloakTool({{ exec }});
+        const ctx = {{ sessionManager: {{ getSessionFile: () => {json.dumps(str(session))} }} }};
+        const result = await tool.execute("id", {{ action: "navigate", url: "https://foo.example" }}, undefined, ctx);
+        const sc = readSidecar(ctx);
+        console.log(JSON.stringify({{
+          prunedHeld: pruned.held, prunedTarget: pruned.targetId || null, prunedLease: pruned.leaseId || "",
+          isError: !!result.isError, text: result.content[0].text, released, sidecar: sc ?? null,
+        }}));
+    """
+    out = _run_bun(script)
+    t.join(2)
+    assert out["prunedHeld"] == {"B": "LB"}
+    assert not out["prunedTarget"]
+    assert out["isError"] is True
+    assert "bind" in out["text"].lower()
+    assert set(out["released"]) == {"LB"}
+    assert "LA" not in out["released"]
+    assert out["sidecar"] is None
+    assert received == []
+
+
 def test_bind_does_not_reuse_revoked_target_lease(tmp_path: Path):
     session = tmp_path / "session.jsonl"
     session.write_text("")
