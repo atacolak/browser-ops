@@ -83,10 +83,11 @@ Tracked demos (`profiles/PROFILES.example.json`):
 ## Lease laws
 
 - one process lease per worker; many tab leases may share it
-- one writer per tab; owned claim without `steal` → `TARGET_CONFLICT`
+- one writer per tab; owned claim without `browserctl --steal` → `TARGET_CONFLICT`
 - exclusive second process lease → `LEASE_CONFLICT`
 - no managed `default` for leased work
 - scheduled reap is the crash backstop for `one_shot` / `expiring` / `auto_reap`
+- mutating drive requires a live `lease_id` (`TARGET_LEASE_REQUIRED`); socket steal is `STEAL_FORBIDDEN`
 - control plane is atomic files under `state/control/`
 
 ```text

@@ -13,7 +13,7 @@ You do not attach Puppeteer or a raw CDP URL to a shared port. The daemon alread
 - **VPN faces** — attach or start a region worker (`--kind vpn`)
 - **Headed or headless** — `launch.headed` on the named face; same lease model either way
 - **Page ops** — navigate, click, type, fill, press, scroll, screenshot, extract, dialogs, wait for load/element
-- **Shared chrome** — two clients on one profile get two tabs. `tabs` tags each page `owned_by_me` / `owned_by` / `unowned`. `new_tab` mints a lease. `switch_tab` to someone else's tab **peeks** (page info + screenshot, window stays put) unless you pass `steal=true`. `close_tab` only closes tabs you own
+- **Shared chrome** — two clients on one profile get two tabs. `tabs` tags each page `owned_by_me` / `owned_by` / `unowned`. `new_tab` mints a lease. `switch_tab` to someone else's tab **peeks** (page info + screenshot, window stays put). `close_tab` only closes tabs you own. Steal is operator recovery (`browserctl --steal`), not an agent verb.
 - **Crash backstop** — `one_shot` leases expire; `browserctl reap` cleans them without killing a persistent browser that still has other tabs
 
 CDP stays on localhost. Cookies live in gitignored profile dirs. No secrets in lease JSON.
@@ -78,13 +78,15 @@ Same profile, two clients:
 
 | action | effect |
 |---|---|
-| `tabs` | census of every page, tagged by lease |
+| `tabs` | census of every page, tagged by ownership (sibling lease ids are not published) |
 | `new_tab` | create a tab **and** a lease for you |
 | `switch_tab` to your tab | drive it (brings it forward) |
 | `switch_tab` to a sibling | peek — no `activateTarget`, your pin stays |
-| `switch_tab` + `steal=true` | take the mutating lease, then drive |
 | `close_tab` | only your leases; also releases that lease |
 | click/type on a tab you don't hold | `TARGET_CONFLICT` |
+| socket `steal` | `STEAL_FORBIDDEN` — recovery is `browserctl launch --steal --target-id` |
+
+Mutating drive without a live `lease_id` is `TARGET_LEASE_REQUIRED`. `--unmanaged` on the daemon is doctor/debug only.
 
 A second **browser** lock on the same worker with exclusive intent is `LEASE_CONFLICT`. A compatible second `launch` / `bind` **joins** and mints a new tab.
 

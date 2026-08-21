@@ -86,12 +86,12 @@ cdp=$(jq -r .env.BROWSER_CDP_URL <<<"$out")
 ### Lease laws
 
 1. **One process lease per worker.** Many tab leases may share that browser. At most one writer per tab.
-2. Duplicate **process** acquire with exclusive intent → `LEASE_CONFLICT`. Claiming an owned tab without `steal` → `TARGET_CONFLICT`. A second `cloak bind` / acquire on the same named profile joins and mints a new tab.
+2. Duplicate **process** acquire with exclusive intent → `LEASE_CONFLICT`. Claiming an owned tab without `browserctl --steal` → `TARGET_CONFLICT`. A second `cloak bind` / acquire on the same named profile joins and mints a new tab.
 3. **No managed `default`** for leased work.
 4. Control plane is atomic files under `state/control/` (no secrets).
 5. Harness publishes `state/<worker>/control/active-target.json` (foreground projection). Ownership lives in `targets.json`.
 6. Scheduled `browserctl reap` is a **crash backstop** for `one_shot`, `expiring`, or explicit `auto_reap`. Stale tab leases can be reaped without killing a persistent browser that still has other tabs.
-7. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling **peeks** (no `activateTarget`) unless `steal=true`. `close_tab` only on your leases.
+7. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling **peeks**. Socket `steal` is `STEAL_FORBIDDEN`. Mutate without `lease_id` is `TARGET_LEASE_REQUIRED`.
 
 ```text
 browser worker / named profile

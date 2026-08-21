@@ -24,6 +24,7 @@ class RecordingBackend:
     """Fake backend that records pin/navigate order and yields mid-navigate."""
 
     worker_id = "pin-test"
+    unmanaged = True
 
     def __init__(self) -> None:
         self.drive_lock = asyncio.Lock()

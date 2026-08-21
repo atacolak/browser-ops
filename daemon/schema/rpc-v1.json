@@ -248,16 +248,15 @@
       ]
     },
     "switch_tab": {
-      "description": "Drive your tab, peek a sibling (no activateTarget), or steal=true to take mutating ownership.",
+      "description": "Drive your tab, or peek a sibling (no activateTarget). steal on the socket is STEAL_FORBIDDEN.",
       "params": {
-        "dest_target_id": "string — tab to peek/drive/steal",
-        "steal": "boolean — take mutating ownership",
-        "lease_id": "string — caller target lease",
+        "dest_target_id": "string — tab to peek/drive",
+        "lease_id": "string — caller target lease (required unless unmanaged)",
         "path": "string | null — peek screenshot path"
       },
       "result": {
         "target_id": "string",
-        "mode": "drive | peek | steal",
+        "mode": "drive | peek",
         "ownership": "owned_by_me | owned_by | unowned",
         "activated": "boolean"
       },
@@ -265,6 +264,8 @@
         "CDP_DISCONNECTED",
         "TAB_NOT_FOUND",
         "TARGET_CONFLICT",
+        "TARGET_LEASE_REQUIRED",
+        "STEAL_FORBIDDEN",
         "MISSING_PARAM"
       ]
     },

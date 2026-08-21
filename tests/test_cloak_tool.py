@@ -122,7 +122,7 @@ def test_build_drive_request_pins_target_and_maps_fill():
         const nav = buildDriveRequest("navigate", sidecar, { action: "navigate", url: "https://ex.test" });
         const fill = buildDriveRequest("fill", sidecar, { action: "fill", selector: "#q", text: "hi" });
         const ping = buildDriveRequest("ping", sidecar, { action: "ping" });
-        const sw = buildDriveRequest("switch_tab", sidecar, { action: "switch_tab", target_id: "OTHER", steal: true });
+        const sw = buildDriveRequest("switch_tab", sidecar, { action: "switch_tab", target_id: "OTHER" });
         console.log(JSON.stringify({ nav, fill, ping, sw }));
         """
     )
@@ -131,7 +131,7 @@ def test_build_drive_request_pins_target_and_maps_fill():
     assert out["fill"] == {"action": "fill_input", "target_id": "TAB", "text": "hi", "selector": "#q", **extra}
     assert out["ping"] == {"action": "ping", "target_id": "TAB", **extra}
     assert out["sw"]["dest_target_id"] == "OTHER"
-    assert out["sw"]["steal"] is True
+    assert "steal" not in out["sw"]
     assert out["sw"]["target_id"] == "TAB"
 
 
@@ -145,9 +145,8 @@ def test_apply_tab_result_rewrites_sidecar():
         };
         const minted = applyTabResult(sidecar, "new_tab", { target_id: "NEW", lease_id: "L2", mode: "drive" });
         const peek = applyTabResult(sidecar, "switch_tab", { target_id: "SIB", mode: "peek", ownership: "owned_by" });
-        const steal = applyTabResult(sidecar, "switch_tab", { target_id: "SIB", lease_id: "L3", mode: "steal" });
         const closed = applyTabResult(minted, "close_tab", { closed: "NEW", released_lease: "L2" });
-        console.log(JSON.stringify({ minted, peek, steal, closed }));
+        console.log(JSON.stringify({ minted, peek, closed }));
         """
     )
     assert out["minted"]["targetId"] == "NEW"
@@ -155,11 +154,11 @@ def test_apply_tab_result_rewrites_sidecar():
     assert out["minted"]["held"] == {"TAB": "L1", "NEW": "L2"}
     assert out["peek"]["targetId"] == "TAB"
     assert out["peek"]["leaseId"] == "L1"
-    assert out["steal"]["targetId"] == "SIB"
-    assert out["steal"]["leaseId"] == "L3"
     assert out["closed"]["targetId"] == "TAB"
     assert out["closed"]["leaseId"] == "L1"
     assert "NEW" not in out["closed"]["held"]
+
+
 
 
 def test_drive_without_bind_errors_no_cdp():

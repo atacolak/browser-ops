@@ -119,13 +119,13 @@ Accountless resolve matches only accountless rows. Multi-match → `PROFILE_AMBI
 ## Lease laws
 
 1. **One process lease per worker.** Many tab leases may share that browser. At most one writer per tab.
-2. Compatible second acquire/bind **joins** and allocates a new tab. Exclusive second process lease → `LEASE_CONFLICT`. Owned tab claim without `--steal` → `TARGET_CONFLICT`.
+2. Compatible second acquire/bind **joins** and allocates a new tab. Exclusive second process lease → `LEASE_CONFLICT`. Owned tab claim without `--steal` → `TARGET_CONFLICT`. `--steal` is operator recovery, not a `cloak` verb.
 3. **No managed `default`.**
 4. **No secrets** in lease JSON, target-state, `targets.json`, or `PROFILES.json`.
 5. Persistent **process** leases stamp `expires_at` for observability; they are **not** auto-reaped. Tab leases with `--auto-reap` / `expiring` / `one_shot` are.
 6. Auto-reap: `mode=one_shot`, `status=expiring`, or explicit `--auto-reap`. `reap --lease ID` force-bypasses. Reaping one tab does not stop the browser while siblings remain.
 7. Attached/existing runtimes (vpn attach): join must not stop the winner.
-8. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling peeks unless `steal=true`. `close_tab` only on your leases.
+8. **Tabs:** `tabs` is a census (`owned_by_me` / `owned_by` / `unowned`). `new_tab` mints a lease. `switch_tab` to a sibling peeks. Socket `steal` is `STEAL_FORBIDDEN`. Mutate without `lease_id` is `TARGET_LEASE_REQUIRED`.
 
 ```text
 browser worker

@@ -1,7 +1,7 @@
-"""Tab ownership labels for swarm peek/steal.
+"""Tab ownership labels.
 
 A chrome page is either owned by an active target lease or unowned.
-Navigators are identified by lease id, not the shared owner string (omp-nav).
+Clients are identified by lease id, not a shared owner string.
 """
 
 from __future__ import annotations
@@ -91,10 +91,9 @@ def annotate_tabs(
             held_lease_ids=held,
         )
         item["ownership"] = meta["ownership"]
-        if meta.get("lease_id"):
+        if meta.get("ownership") == OWNED_BY_ME and meta.get("lease_id"):
             item["lease_id"] = meta["lease_id"]
-        if meta.get("owner"):
-            item["owner"] = meta["owner"]
+        # sibling lease ids are capabilities — do not publish them
         out.append(item)
     return out
 

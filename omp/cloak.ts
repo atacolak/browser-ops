@@ -69,10 +69,8 @@ export type CloakParams = {
 	timeout?: number;
 	accept?: boolean;
 	prompt_text?: string;
-	/** tab to peek / steal / close (not the bound drive pin) */
+	/** tab to peek / close (not the bound drive pin) */
 	target_id?: string;
-	/** take mutating ownership of target_id (switch_tab only) */
-	steal?: boolean;
 };
 
 export type DaemonRequest = {
@@ -195,7 +193,6 @@ export function buildDriveRequest(action: string, sidecar: BindState, params: Cl
 		case "close_tab":
 			if (params.target_id !== undefined) req.dest_target_id = params.target_id;
 			if (params.path !== undefined) req.path = params.path;
-			if (action === "switch_tab" && params.steal) req.steal = true;
 			break;
 		default:
 			break;
@@ -277,7 +274,7 @@ function bindSummary(state: BindState, used: string, reused: boolean): string {
 		`${verb} ${used}. lease=${state.leaseId} target=${state.targetId} worker=${state.worker}. ` +
 		`Drive with cloak actions (navigate, click, type, …) — the tool pins the leased tab. ` +
 		`tabs lists every page tagged owned_by_me / owned_by:<lease> / unowned. ` +
-		`new_tab mints a new lease for you. switch_tab to a sibling is a peek unless steal=true. ` +
+		`new_tab mints a new lease for you. switch_tab to a sibling is a peek. ` +
 		`Do not attach a CDP url. release when the job is done.`
 	);
 }
@@ -300,7 +297,7 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 			"Bind a leased Cloak browser and drive the leased tab through the daemon socket. " +
 			"action=bind {site|profile|scratch} once per job; then action=navigate|click|type|… . " +
 			"tabs are tagged owned_by_me / owned_by / unowned. new_tab mints a lease. " +
-			"switch_tab to someone else's tab peeks unless steal=true. " +
+			"switch_tab to someone else's tab peeks. " +
 			"Do not run browserctl, do not pass a cdp url. " +
 			"The browser stays up after yield. action=release only when the job is done.",
 		parameters: {
@@ -331,7 +328,6 @@ export default function cloakTool(pi: { exec: ExecFn }) {
 				accept: { type: "boolean", description: "dialog accept (true) or dismiss (false)" },
 				prompt_text: { type: "string", description: "dialog prompt response" },
 				target_id: { type: "string", description: "switch_tab / close_tab destination (not your bound pin)" },
-				steal: { type: "boolean", description: "switch_tab: take mutating ownership of target_id" },
 			},
 		},
 		async execute(_id: string, params: CloakParams, _onUpdate: unknown, ctx: SessionCtx) {

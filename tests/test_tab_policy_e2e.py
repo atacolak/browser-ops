@@ -1,4 +1,4 @@
-"""Live two-navigator tab policy: peek / steal / mint / close.
+"""Live two-client tab policy: peek / mint / close. Steal is operator-only.
 
 Uses a unique scratch worker so operator profiles are untouched.
 """
@@ -41,7 +41,7 @@ def _rpc(sock: Path, payload: dict, timeout: float = 30.0) -> dict:
     return json.loads(buf.split(b"\n", 1)[0].decode())
 
 
-def test_two_navigators_peek_steal_mint_close():
+def test_two_clients_peek_mint_close():
     worker = f"scratch-tab-e2e-{uuid.uuid4().hex[:8]}"
     m = Manager(root=ROOT)
     a = b = None
@@ -164,10 +164,7 @@ def test_two_navigators_peek_steal_mint_close():
                 "steal": True,
             },
         )
-        assert steal.get("mode") == "steal", steal
-        stolen_lease = steal.get("lease_id")
-        assert stolen_lease
-        assert steal.get("ownership") == "owned_by_me"
+        assert steal.get("code") == "STEAL_FORBIDDEN", steal
 
         minted = _rpc(
             sock,
@@ -175,7 +172,7 @@ def test_two_navigators_peek_steal_mint_close():
                 "action": "new_tab",
                 "url": "https://example.net",
                 "lease_id": la,
-                "held_lease_ids": [la, stolen_lease],
+                "held_lease_ids": [la],
                 "target_id": ta,
             },
             timeout=60,
@@ -191,7 +188,7 @@ def test_two_navigators_peek_steal_mint_close():
                 "action": "close_tab",
                 "lease_id": lb,
                 "held_lease_ids": [lb],
-                "dest_target_id": tb,
+                "dest_target_id": ta,
             },
         )
         assert b_close.get("code") == "TARGET_CONFLICT", b_close
@@ -201,7 +198,7 @@ def test_two_navigators_peek_steal_mint_close():
             {
                 "action": "close_tab",
                 "lease_id": new_lid,
-                "held_lease_ids": [la, stolen_lease, new_lid],
+                "held_lease_ids": [la, new_lid],
                 "dest_target_id": new_tid,
             },
         )

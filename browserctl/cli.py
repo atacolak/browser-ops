@@ -360,7 +360,7 @@ def _add_lease_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--steal",
         action="store_true",
-        help="take mutating ownership of --target-id from its current lease",
+        help="operator recovery: take mutating ownership of --target-id from its current lease",
     )
 
 

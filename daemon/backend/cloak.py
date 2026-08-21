@@ -77,10 +77,13 @@ class CloakBackend(BrowserBackend):
         worker_id: str,
         profile_dir: str | None = None,
         cdp_port: int | None = None,
+        *,
+        unmanaged: bool = False,
     ):
         self.worker_id = worker_id
         self.profile_dir = profile_dir or str(self._DEFAULT_PROFILES / worker_id)
         self.cdp_port = cdp_port
+        self.unmanaged = unmanaged
         self.cdp: CDPClient | None = None
         self.session_id: str | None = None
         self.target_id: str | None = None

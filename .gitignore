@@ -30,8 +30,16 @@ profiles/.API_STAGES.json.lock
 skills/domains/
 skills/interactions/
 
-# operator scrapes / captures
-scrapes/
+# operator scrape dumps (keep scripts / README)
+scrapes/**/*.json
+scrapes/**/*.csv
+!scrapes/**/*.md
+!scrapes/**/scrape
+!scrapes/**/lookup
+!scrapes/**/join
+!scrapes/**/club
+!scrapes/**/ue-sitemap
+scrapes/**/.venv/
 
 # daemon sockets, events, provenance, leases, optional viewer-root
 state/**

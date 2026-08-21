@@ -143,6 +143,11 @@ async def main():
         action="store_true",
         help="Disable geoip auto-detection of timezone/locale",
     )
+    parser.add_argument(
+        "--unmanaged",
+        action="store_true",
+        help="Doctor/debug: skip target-lease enforcement on the socket (not for leased work)",
+    )
     args = parser.parse_args()
 
     # ── Doctor mode ─────────────────────────────────────────────────────
@@ -174,6 +179,7 @@ async def main():
         args.worker,
         profile_dir=args.profile_dir,
         cdp_port=args.cdp_port,
+        unmanaged=args.unmanaged,
     )
 
     if args.launch:

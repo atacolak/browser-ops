@@ -33,16 +33,17 @@ Two clients, same named profile:
 
 - same worker / same daemon socket / same chrome
 - **two** tab leases, two sidecars
-- `tabs` lists every page, tagged `owned_by_me` / `owned_by` (+ lease id) / `unowned`
+- `tabs` lists every page, tagged `owned_by_me` / `owned_by` / `unowned` (sibling lease ids are not published)
 - `new_tab` mints a tab lease for the caller and rewrites the sidecar
 - `switch_tab` to **your** tab: drive (may bring it forward)
-- `switch_tab` to a **sibling** or unowned tab: **peek** (page info + screenshot, no `activateTarget`, sidecar unchanged) unless `steal=true`
-- `steal=true` transfers the tab lease
+- `switch_tab` to a **sibling** or unowned tab: **peek** (page info + screenshot, no `activateTarget`, sidecar unchanged)
 - `close_tab` only on your leases (also releases that lease)
 - click/type on a tab you do not hold → `TARGET_CONFLICT`
+- socket `steal` → `STEAL_FORBIDDEN`; operator recovery is `browserctl launch --steal --target-id`
+- mutating drive without a live `lease_id` → `TARGET_LEASE_REQUIRED` (`--unmanaged` is doctor/debug)
 - `LEASE_CONFLICT` only on a second **process** lock with exclusive intent
 
-Ownership is by **lease id**.
+Ownership is by **lease id**. A lease id is a mutation capability.
 
 ## Sidecar
 
@@ -69,7 +70,7 @@ Ownership is by **lease id**.
 
 On the daemon, not on the tool (yet): `evaluate` (gated), `screenshot_base64`, `http_get`, `upload_file`, `run_procedure`, `drain_events`.
 
-`switch_tab` params: `target_id` = destination tab, `steal` = take mutating ownership. Peek is the default for tabs you do not hold.
+`switch_tab` params: `target_id` = destination tab. Peek is the default for tabs you do not hold. Steal is not a socket verb.
 
 ## Surfaces
 
@@ -96,5 +97,6 @@ Tracked instead: `profiles/PROFILES.example.json`, `profiles/BINDING.md`, tests,
 2. client A navigate ≠ client B url (daemon pin, not first/visible tab)
 3. `cloak` omitted from a session whose agent `tools:` does not list it
 4. drive without bind → error, no raw CDP connect
-5. `tabs` tags a sibling `owned_by`; `switch_tab` without steal peeks; `steal=true` transfers the lease
+5. `tabs` tags a sibling `owned_by` without leaking their lease id; `switch_tab` peeks; socket `steal` is `STEAL_FORBIDDEN`
 6. `new_tab` mints a tab lease; `close_tab` on a sibling is `TARGET_CONFLICT`
+7. mutate without `lease_id` → `TARGET_LEASE_REQUIRED`; `--unmanaged` still pins under the drive lock

@@ -84,6 +84,10 @@ def test_classify_owned_by_lease_id_not_owner_string(ctx):
     )
     by_id = {t["targetId"]: t["ownership"] for t in tabs}
     assert by_id == {"TA": "owned_by_me", "TB": "owned_by", "NOPE": "unowned"}
+    mine_row = next(t for t in tabs if t["targetId"] == "TA")
+    sib_row = next(t for t in tabs if t["targetId"] == "TB")
+    assert mine_row.get("lease_id") == a["lease"]["lease_id"]
+    assert "lease_id" not in sib_row
 
 
 def test_steal_transfers_target_lease(ctx):
@@ -208,25 +212,23 @@ def test_tabs_annotated_and_sibling_switch_is_peek(ctx):
     assert backend.activated == []
     assert backend.target_id == "TA"
 
-    steal = _run(
-        _execute_action(
-            backend,
-            "switch_tab",
-            {
-                "lease_id": a["lease"]["lease_id"],
-                "held_lease_ids": [a["lease"]["lease_id"]],
-                "dest_target_id": "TB",
-                "steal": True,
-            },
+    with pytest.raises(DaemonError) as ei:
+        _run(
+            _execute_action(
+                backend,
+                "switch_tab",
+                {
+                    "lease_id": a["lease"]["lease_id"],
+                    "held_lease_ids": [a["lease"]["lease_id"]],
+                    "dest_target_id": "TB",
+                    "steal": True,
+                },
+            )
         )
-    )
-    assert steal["mode"] == "steal"
-    assert steal["ownership"] == "owned_by_me"
-    assert backend.activated[-1] == "TB"
-    mine = classify_target(state, "scratch-profile-providers", "TB", caller_lease_id=steal["lease_id"])
-    old = classify_target(state, "scratch-profile-providers", "TB", caller_lease_id=b["lease"]["lease_id"])
-    assert mine["ownership"] == "owned_by_me"
-    assert old["ownership"] == "owned_by"
+    assert ei.value.code == "STEAL_FORBIDDEN"
+    assert backend.activated == []
+    still = classify_target(state, "scratch-profile-providers", "TB", caller_lease_id=b["lease"]["lease_id"])
+    assert still["ownership"] == "owned_by_me"
 
 
 def test_new_tab_mints_lease_and_close_only_own(ctx):
@@ -305,3 +307,16 @@ def test_navigate_on_sibling_target_is_conflict(ctx):
             )
         )
     assert ei.value.code == "TARGET_CONFLICT"
+
+
+def test_mutate_without_lease_id_is_required(ctx):
+    m, _fake, state = ctx
+    m.acquire({"kind": "scratch", "worker_id": "scratch-profile-providers", "owner": "omp-nav", "ttl": 120, "target_id": "TA"})
+    backend = RecordingTabs(state)
+    with pytest.raises(DaemonError) as ei:
+        _run(_execute_action(backend, "navigate", {"url": "https://evil.example", "target_id": "TA"}))
+    assert ei.value.code == "TARGET_LEASE_REQUIRED"
+
+    backend.unmanaged = True
+    out = _run(_execute_action(backend, "navigate", {"url": "https://ok.example", "target_id": "TA"}))
+    assert out["navigated"] == "https://ok.example"
