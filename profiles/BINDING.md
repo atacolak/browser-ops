@@ -11,10 +11,10 @@ Cookies **are** the person. Do not share browsers across accounts.
 
 | Map | File |
 |---|---|
-| stable name → launch + site/account + description | `profiles/PROFILES.json` (**tracked**, schema **v2**) |
+| stable name → launch + site/account + description | `profiles/PROFILES.json` (**local**, schema **v2**; copy from `PROFILES.example.json`) |
 | Cloak user-data dirs | `profiles/scratch/`, `profiles/vpn/` (**runtime**, gitignored) |
 | leases | `state/control/leases/` |
-| active CDP target | `state/<worker>/control/active-target.json` |
+| daemon socket | `state/<worker>/daemon.sock` |
 
 ---
 
@@ -32,13 +32,13 @@ Cookies **are** the person. Do not share browsers across accounts.
 ./bin/browserctl launch --profile lab-demo --json   # stamps BROWSERCTL_PROFILE_NAME
 ```
 
-- Returns `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, `BROWSER_CDP_URL`, …).
+- Returns `env` (`BROWSER_HARNESS_WORKER`, `BROWSER_TARGET_STATE`, `BROWSERCTL_PROFILE_NAME`, `BROWSER_CDP_URL`, …). `BROWSER_CDP_URL` is for humans/doctor.
 - Enforces **one browser/process lease per worker** and **one mutating owner per target**; refuses managed **`default`**.
 - `--profile` is exclusive with launch selector flags; associations are explicit (never URL-inferred).
 - New named faces require a **description**. `launch.egress` is `direct` or `{type:vpn,…}` — never a peer kind.
-- OMP navigators bind via `bind_profile` (`omp/bind-profile.ts` → `app.cdp_url` + `app.target_id`). They do not shell `browserctl`.
+- OMP navigators bind via `cloak action=bind` (`omp/cloak.ts`) and drive json-line rpc on the worker daemon socket. They do not shell `browserctl` and do not attach `app.cdp_url`.
 
-Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md).
+Full sheet: [`docs/browserctl.md`](../docs/browserctl.md). Operator law: [`AGENTS.md`](../AGENTS.md). Drive path: [`docs/CONTRACT.md`](../docs/CONTRACT.md).
 
 ---
 

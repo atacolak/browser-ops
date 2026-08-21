@@ -13,10 +13,10 @@ __pycache__/
 .ruff_cache/
 
 # Cloak / Chromium user-data (never commit cookies/caches).
-# Tracked under profiles/: PROFILES.json + docs only.
+# Tracked under profiles/: PROFILES.example.json + docs only.
 profiles/**
 !profiles/BINDING.md
-!profiles/PROFILES.json
+!profiles/PROFILES.example.json
 !profiles/README.md
 
 # leftover runtime ledgers (if present from older trees)
@@ -25,6 +25,13 @@ profiles/API_STAGES.json
 profiles/.PROFILES.json.lock
 profiles/.IDENTITIES.json.lock
 profiles/.API_STAGES.json.lock
+
+# operator skill trees (site procedures / copied interaction notes)
+skills/domains/
+skills/interactions/
+
+# operator scrapes / captures
+scrapes/
 
 # daemon sockets, events, provenance, leases, optional viewer-root
 state/**

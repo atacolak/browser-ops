@@ -6,50 +6,52 @@ operator truth on disk:
 - AGENTS.md (agent law)
 - README.md (human entry)
 - docs/browserctl.md (cli contract)
+- docs/CONTRACT.md (drive-path law)
 - profiles/BINDING.md (identity invariants)
 
-live truth: `./bin/browserctl list|status --json`, CDP `/json/version`, `state/<worker>/control/active-target.json`
+live truth: `./bin/browserctl list|status --json`, CDP `/json/version`, `state/<worker>/daemon.sock`
 
 ---
 
 ## one-sentence system
 
-browser-ops is a LOCAL control plane that binds cloak profile dirs to cdp daemons and hands out a leased env (`BROWSER_CDP_URL`). it does not spawn herdr panes.
+browser-ops is a LOCAL control plane that leases Cloak processes and target tabs. omp navigators drive the leased tab only through the daemon unix socket. it does not spawn herdr panes.
 
 ## layered topology
 
 ```
-human / orchestrator / bind_profile
+human / orchestrator / cloak bind
   └─ browserctl (lease + named profile resolve)
        ├─ adapters
        │    ├─ scratch/adhoc  → unique or stable worker, cdp 9300-9399
        │    └─ vpn            → region worker / attach-only
        ├─ state/control/      → leases, ports, locks (no secrets)
-       └─ returns env JSON
+       └─ daemon.sock
             └─ navigator (ONLY browser actor)
-                 ├─ browser open app.cdp_url + app.target_id
-                 └─ daemon publishes active-target.json (foreground only)
+                 └─ cloak json-line {action, target_id, ...} on the socket
 ```
 
-cloak is the browser substrate. daemon is the harness + target publisher. browserctl is the mutex/lease desk. navigator is the hands.
+cloak is the browser substrate. daemon is the harness + rpc. browserctl is the mutex/lease desk. navigator is the hands via the `cloak` tool.
 
 ## ownership law
 
 | actor | owns | must not |
 |---|---|---|
 | orchestrator / human | `launch`/`release`, profile resolve, associate-after-login | driving pages; raw port grabs |
-| navigator | page ops with ALREADY-ACQUIRED `cdp_url` | allocating cdp/ports/profiles; lease lifecycle; shelling browserctl |
+| navigator | page ops via `cloak` on an already-bound daemon socket | allocating cdp/ports/profiles; lease lifecycle; shelling browserctl; attaching `app.cdp_url` |
 | demiurge | code/config in browser-ops | browser mutation |
 | browserctl | one browser/process lease per worker; target leases; adapter start/stop | secrets in lease/profile json |
 
 ## happy path
 
+CLI (human / orchestrator):
+
 1. decide selector: `--profile NAME` OR `--kind scratch|vpn …`
 2. `out=$(./bin/browserctl launch … --owner <orch> --json)`
-3. attach `env.BROWSER_CDP_URL` **and** `env.BROWSERCTL_TARGET_ID`
+3. doctor may inspect `env.BROWSER_CDP_URL` **and** `env.BROWSERCTL_TARGET_ID`
 4. `./bin/browserctl release --lease "$lease" --json`
 
-OMP: `bind_profile` does steps 1–2; `browser` open uses `app.cdp_url` + `app.target_id` (sidecar / `BROWSERCTL_TARGET_ID` if omitted); `release=true` drops that target only.
+OMP: `cloak action=bind` does steps 1–2; later `cloak` acts send json-line to `state/<worker>/daemon.sock` (`{action, target_id, ...}`). Navigators never open `app.cdp_url`. `release=true` / `cloak action=release` drops that target only.
 
 ## env contract
 
@@ -57,17 +59,17 @@ OMP: `bind_profile` does steps 1–2; `browser` open uses `app.cdp_url` + `app.t
 - `BROWSERCTL_TARGET_ID` (owned CDP page)
 - `BROWSERCTL_BROWSER_LEASE_ID`
 - `BROWSER_HARNESS_WORKER`
-- `BROWSER_CDP_URL`
+- `BROWSER_CDP_URL` (humans/doctor only — not navigator attach)
 - `BROWSER_TARGET_STATE`
 - `BROWSER_OPS_ROOT` / `BROWSER_OPS_STATE`
 - `BROWSER_ALLOW_EVALUATE=1`
 - `BROWSERCTL_PROFILE_NAME` (only via `--profile`)
 
-no env, no browser authority.
+no env, no browser authority. navigators still do not consume `BROWSER_CDP_URL`.
 
 ## two registries (do not collapse them)
 
-1. **PROFILES.json** (tracked): named SELECTORS only. `register / associate / resolve / launch --profile`. no secrets. resolve is exact, never fuzzy, never starts browsers, never auto-creates scratch.
+1. **PROFILES.json** (local, copy from `PROFILES.example.json`): named SELECTORS only. `register / associate / resolve / launch --profile`. no secrets. resolve is exact, never fuzzy, never starts browsers, never auto-creates scratch.
 2. **Cloak user-data** under `profiles/scratch|vpn/…` (runtime, gitignored). cookies are the person.
 
 ## named profile mechanics
@@ -78,8 +80,7 @@ no env, no browser authority.
 - `launch --profile NAME` exclusive with selector flags; stamps `lease.profile_name` + `BROWSERCTL_PROFILE_NAME`
 - multi-match → PROFILE_AMBIGUOUS; missing → PROFILE_NOT_FOUND
 
-current tracked names:
-- `github-ata` → scratch label github-ata; assoc github.com / atacolak
+example tracked names (`profiles/PROFILES.example.json`):
 - `scratch-general-1..3` → finite stable scratch pool (no associations)
 - `shared-headed-demo` → stable scratch, `headed: true` (shared CDP, per-navigator targets)
 
@@ -111,8 +112,8 @@ browser worker
 ./bin/browserctl list --json
 ./bin/browserctl status --lease <id> --json
 ./bin/browserctl launch --kind scratch --label demo --owner teach --json
-./bin/browserctl launch --profile github-ata --owner teach --json
+./bin/browserctl launch --profile shared-headed-demo --owner teach --json
 ./bin/browserctl release --lease <id> --json
 ./bin/browserctl profiles list --json
-./bin/browserctl profiles resolve github.com --account atacolak --json
+./bin/browserctl profiles resolve example.com --json
 ```

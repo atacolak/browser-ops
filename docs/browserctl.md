@@ -1,13 +1,13 @@
 # browserctl
 
-Lease a Cloak browser. Named profiles live in `profiles/PROFILES.json`.
+Lease a Cloak browser. Named profiles live in `profiles/PROFILES.json` (copy from [`PROFILES.example.json`](../profiles/PROFILES.example.json)).
 
 ```bash
 ./bin/browserctl launch --kind scratch --label demo --owner orch --json
 ./bin/browserctl release --lease "$LEASE" --json
 ```
 
-OMP navigators use `bind_profile` (source: `omp/bind-profile.ts`) and attach with `app.cdp_url` plus `app.target_id`. They do not shell this CLI.
+OMP navigators use the `cloak` tool (source: `omp/cloak.ts`) and drive the leased tab over the daemon unix socket. They do not shell this CLI and do not attach `app.cdp_url`.
 
 ---
 
@@ -107,7 +107,7 @@ Accountless resolve matches only accountless rows. Multi-match → `PROFILE_AMBI
 | `BROWSERCTL_TARGET_ID` | owned CDP target |
 | `BROWSERCTL_TARGET_LEASE_ID` | same as `BROWSERCTL_LEASE_ID` |
 | `BROWSER_HARNESS_WORKER` | daemon worker id |
-| `BROWSER_CDP_URL` | e.g. `http://127.0.0.1:9304` |
+| `BROWSER_CDP_URL` | e.g. `http://127.0.0.1:9304` (humans/doctor; not navigator attach) |
 | `BROWSER_TARGET_STATE` | `state/<worker>/control/active-target.json` |
 | `BROWSER_OPS_ROOT` / `BROWSER_OPS_STATE` | checkout / state root |
 | `BROWSER_ALLOW_EVALUATE=1` | daemon contract |
@@ -131,7 +131,7 @@ browser worker
 └── target lease → navigator b
 ```
 
-Named-profile concurrency: two `bind_profile(profile=…)` calls share `BROWSER_CDP_URL` and get distinct `BROWSERCTL_TARGET_ID`s. OMP `browser open` must attach with `app.target_id` (or the bind sidecar / `BROWSERCTL_TARGET_ID`); it must not take the first or visible tab. `release=true` drops that navigator's target only.
+Named-profile concurrency: two `cloak bind` calls on the same named profile share one worker / daemon socket and get distinct target leases. Drive is json-line `{action, target_id, ...}` on `state/<worker>/daemon.sock`. Navigators must not attach `app.cdp_url` or adopt the first/visible tab. `cloak action=release` drops that navigator's target only.
 
 Timer units: `packaging/systemd/user/` + `./bin/browserctl-reap-timer install`.
 
